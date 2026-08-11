@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="北邮新传备考看板">
+  <rect width="512" height="512" fill="#1f5d42"/>
+  <rect x="112" y="104" width="288" height="304" rx="34" fill="#f7faf7"/>
+  <rect x="151" y="148" width="210" height="22" rx="11" fill="#1f5d42"/>
+  <rect x="151" y="204" width="138" height="18" rx="9" fill="#a9b8af"/>
+  <rect x="151" y="250" width="210" height="18" rx="9" fill="#a9b8af"/>
+  <rect x="151" y="296" width="118" height="18" rx="9" fill="#a9b8af"/>
+  <circle cx="330" cy="326" r="54" fill="#d2a84b"/>
+  <path d="M330 294v34l23 14" fill="none" stroke="#183e2f" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
