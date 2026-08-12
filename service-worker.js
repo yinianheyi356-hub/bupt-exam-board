@@ -1,15 +1,15 @@
 const CACHE_PREFIX = "bupt-exam-board-";
-const CACHE_NAME = `${CACHE_PREFIX}v5`;
+const CACHE_NAME = `${CACHE_PREFIX}v6`;
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
+  "./styles.css?v=1.1.1",
   "./manifest.webmanifest",
-  "./src/app.js",
-  "./src/domain.js",
-  "./src/study-plan.js",
-  "./src/storage.js",
-  "./vendor/lucide.min.js",
+  "./src/app.js?v=1.1.1",
+  "./src/domain.js?v=1.1.1",
+  "./src/study-plan.js?v=1.1.1",
+  "./src/storage.js?v=1.1.1",
+  "./vendor/lucide.min.js?v=1.1.1",
   "./assets/icon.svg",
   "./assets/icon-180.png",
   "./assets/icon-192.png",
@@ -36,19 +36,18 @@ self.addEventListener("fetch", event => {
   if (event.request.method !== "GET") return;
 
   event.respondWith(
-    caches.match(event.request).then(cached => {
-      const networkRequest = fetch(event.request)
-        .then(response => {
-          if (response.ok && new URL(event.request.url).origin === self.location.origin) {
-            const copy = response.clone();
-            return caches.open(CACHE_NAME)
-              .then(cache => cache.put(event.request, copy))
-              .then(() => response);
-          }
-          return response;
-        })
-        .catch(() => cached ?? caches.match("./index.html"));
-      return cached ?? networkRequest;
-    })
+    (async () => {
+      const cached = await caches.match(event.request);
+      try {
+        const response = await fetch(event.request);
+        if (response.ok && new URL(event.request.url).origin === self.location.origin) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(event.request, response.clone());
+        }
+        return response;
+      } catch {
+        return cached ?? (event.request.mode === "navigate" ? caches.match("./index.html") : Response.error());
+      }
+    })()
   );
 });

@@ -27,7 +27,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js";
+} from "./domain.js?v=1.1.1";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -39,13 +39,15 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js";
+} from "./storage.js?v=1.1.1";
 import {
   BUILTIN_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js";
+} from "./study-plan.js?v=1.1.1";
+
+const APP_VERSION = "1.1.1";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -730,7 +732,7 @@ function renderSettingsPage() {
         </div>
         <button class="text-danger-button" data-action="reset-data">清除全部本地数据</button>
       </section>
-      <section class="about-section"><span>北邮新传备考看板</span><span>Web App 1.1</span></section>
+      <section class="about-section"><span>北邮新传备考看板</span><span>Web App ${APP_VERSION}</span></section>
     </div>`;
 }
 
@@ -1650,7 +1652,18 @@ function handlePointerCancel(event) {
 async function registerServiceWorker() {
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     try {
-      await navigator.serviceWorker.register("./service-worker.js", { scope: "./" });
+      const hadController = Boolean(navigator.serviceWorker.controller);
+      let isRefreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (!hadController || isRefreshing) return;
+        isRefreshing = true;
+        window.location.reload();
+      });
+      const registration = await navigator.serviceWorker.register(
+        `./service-worker.js?v=${APP_VERSION}`,
+        { scope: "./", updateViaCache: "none" }
+      );
+      await registration.update();
     } catch (error) {
       console.warn("Service worker registration failed", error);
     }
