@@ -1,15 +1,15 @@
 const CACHE_PREFIX = "bupt-exam-board-";
-const CACHE_NAME = `${CACHE_PREFIX}v7`;
+const CACHE_NAME = `${CACHE_PREFIX}v8`;
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=1.1.2",
+  "./styles.css?v=1.1.3",
   "./manifest.webmanifest",
-  "./src/app.js?v=1.1.2",
-  "./src/domain.js?v=1.1.2",
-  "./src/study-plan.js?v=1.1.2",
-  "./src/storage.js?v=1.1.2",
-  "./vendor/lucide.min.js?v=1.1.2",
+  "./src/app.js?v=1.1.3",
+  "./src/domain.js?v=1.1.3",
+  "./src/study-plan.js?v=1.1.3",
+  "./src/storage.js?v=1.1.3",
+  "./vendor/lucide.min.js?v=1.1.3",
   "./assets/icon.svg",
   "./assets/icon-180.png",
   "./assets/icon-192.png",

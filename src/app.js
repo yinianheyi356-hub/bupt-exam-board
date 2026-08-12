@@ -27,7 +27,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.1.2";
+} from "./domain.js?v=1.1.3";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -39,15 +39,15 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.1.2";
+} from "./storage.js?v=1.1.3";
 import {
   BUILTIN_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.1.2";
+} from "./study-plan.js?v=1.1.3";
 
-const APP_VERSION = "1.1.2";
+const APP_VERSION = "1.1.3";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -75,7 +75,6 @@ let focusTicker = null;
 let deferredInstallPrompt = null;
 let draggedTaskId = null;
 let touchReorder = null;
-let serviceWorkerRefreshPending = false;
 let swipeGesture = null;
 let dayRefreshPromise = null;
 
@@ -1653,13 +1652,6 @@ function handlePointerCancel(event) {
 async function registerServiceWorker() {
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     try {
-      const hadController = Boolean(navigator.serviceWorker.controller);
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        if (!hadController || serviceWorkerRefreshPending) return;
-        serviceWorkerRefreshPending = true;
-        saveEmergencySnapshot(state);
-        showToast("新版本已就绪，下次打开时自动更新");
-      });
       const registration = await navigator.serviceWorker.register(
         `./service-worker.js?v=${APP_VERSION}`,
         { scope: "./", updateViaCache: "none" }
@@ -1709,7 +1701,6 @@ async function initialize() {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) saveEmergencySnapshot(state);
-    else if (serviceWorkerRefreshPending) window.location.reload();
     else refreshCurrentDay();
   });
   window.addEventListener("focus", refreshCurrentDay);
