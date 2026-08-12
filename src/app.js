@@ -27,7 +27,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.1.3";
+} from "./domain.js?v=1.1.4";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -39,15 +39,15 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.1.3";
+} from "./storage.js?v=1.1.4";
 import {
   BUILTIN_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.1.3";
+} from "./study-plan.js?v=1.1.4";
 
-const APP_VERSION = "1.1.3";
+const APP_VERSION = "1.1.4";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -1673,7 +1673,6 @@ async function initialize() {
   applyAppearance();
   renderShell();
   startFocusTicker();
-  await registerServiceWorker();
 
   appElement.addEventListener("click", handleClick);
   appElement.addEventListener("submit", handleSubmit);
@@ -1705,6 +1704,9 @@ async function initialize() {
   });
   window.addEventListener("focus", refreshCurrentDay);
   window.addEventListener("pagehide", () => saveEmergencySnapshot(state));
+
+  // 缓存更新属于后台维护，不能阻塞已经渲染出的页面交互。
+  registerServiceWorker();
 
   if (planResult.installed) showToast(`已写入 ${planResult.taskCount} 项四科备考计划`);
   else if (deferredCount) showToast(`已自动顺延 ${deferredCount} 项逾期任务`);
