@@ -53,8 +53,7 @@ export function daysBetween(from, to) {
   return Math.round((startOfDay(to) - startOfDay(from)) / 86_400_000);
 }
 
-function nextExamDate() {
-  const now = new Date();
+function nextExamDate(now = new Date()) {
   let result = new Date(now.getFullYear(), 11, 20);
   if (result < startOfDay(now)) result = new Date(now.getFullYear() + 1, 11, 20);
   return dateKey(result);
@@ -74,16 +73,19 @@ function seedSubject(name, color, sortOrder) {
   };
 }
 
-export function createDefaultState() {
+export function createDefaultState(now = new Date()) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     settings: {
       examName: "北京邮电大学新闻与传播考研",
       targetSchool: "北京邮电大学",
       targetMajor: "新闻与传播",
-      preparationStartDate: dateKey(),
-      examDate: nextExamDate(),
-      dailyGoalMinutes: 480,
+      preparationStartDate: dateKey(now),
+      examDate: nextExamDate(now),
+      dailyGoalMinutes: 400,
+      dailyPlannedMinutes: 480,
+      dailyPomodoroTarget: 16,
+      subjectPomodoroTarget: 4,
       focusMinutes: 25,
       shortBreakMinutes: 5,
       longBreakMinutes: 15,
@@ -96,6 +98,7 @@ export function createDefaultState() {
       appearance: "system"
     },
     dailyNotes: {},
+    planning: null,
     subjects: [
       seedSubject("思想政治理论", "#8a4b4b", 0),
       seedSubject("英语二", "#315a7d", 1),
@@ -127,6 +130,9 @@ export function normalizeState(candidate) {
     pomodoroRecords: Array.isArray(candidate.pomodoroRecords)
       ? candidate.pomodoroRecords
       : [],
+    planning: candidate.planning && typeof candidate.planning === "object"
+      ? candidate.planning
+      : null,
     ui: { ...defaults.ui, ...(candidate.ui ?? {}) }
   };
 
@@ -147,6 +153,10 @@ export function normalizeState(candidate) {
           task.automaticReview ??= true;
           task.isReview ??= false;
           task.reviewStage ??= 0;
+          task.pomodoroTarget ??= 4;
+          task.studyNotes ??= "";
+          task.resourceLinks = Array.isArray(task.resourceLinks) ? task.resourceLinks : [];
+          task.attachments = Array.isArray(task.attachments) ? task.attachments : [];
         });
       });
     });
@@ -254,6 +264,17 @@ export function createTask(values = {}, sortOrder = 0) {
     isReview: values.isReview ?? false,
     reviewStage: Number(values.reviewStage) || 0,
     sourceTaskId: values.sourceTaskId || null,
+    planKey: values.planKey || null,
+    planDate: values.planDate || null,
+    planPhase: values.planPhase || null,
+    planSubjectKey: values.planSubjectKey || null,
+    planBlockLabel: values.planBlockLabel || "",
+    planBlockMinutes: Number(values.planBlockMinutes) || 0,
+    pomodoroTarget: Number(values.pomodoroTarget) || 4,
+    outlineTopic: values.outlineTopic || null,
+    studyNotes: values.studyNotes || "",
+    resourceLinks: Array.isArray(values.resourceLinks) ? values.resourceLinks : [],
+    attachments: Array.isArray(values.attachments) ? values.attachments : [],
     tags: Array.isArray(values.tags) ? values.tags : [],
     deferCount: Number(values.deferCount) || 0,
     lastDeferredAt: values.lastDeferredAt || null,
@@ -324,7 +345,7 @@ export function runAutomaticDeferral(state, now = new Date()) {
   const today = startOfDay(now);
   let changed = 0;
   for (const { task } of getTaskContexts(state)) {
-    if (task.isReview || ["completed", "needsReview"].includes(task.status)) continue;
+    if (task.planKey || task.isReview || ["completed", "needsReview"].includes(task.status)) continue;
     const dates = [task.scheduledAt, task.dueAt].filter(Boolean).map(value => new Date(value));
     if (!dates.length) continue;
     const earliest = new Date(Math.min(...dates));
@@ -362,7 +383,12 @@ export function todaySections(state, now = new Date()) {
       return !date || new Date(date) < endOfToday;
     })
     .sort((a, b) => new Date(a.task.dueAt ?? 0) - new Date(b.task.dueAt ?? 0));
-  return { timeline, todo, reviews };
+  const backlog = pending
+    .filter(({ task }) => task.planKey
+      && task.planDate
+      && task.planDate < dateKey(now))
+    .sort((a, b) => new Date(a.task.scheduledAt) - new Date(b.task.scheduledAt));
+  return { timeline, todo, reviews, backlog };
 }
 
 export function activeFocusRecord(state) {

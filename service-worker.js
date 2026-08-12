@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "bupt-exam-board-";
-const CACHE_NAME = `${CACHE_PREFIX}v4`;
+const CACHE_NAME = `${CACHE_PREFIX}v5`;
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const APP_SHELL = [
   "./manifest.webmanifest",
   "./src/app.js",
   "./src/domain.js",
+  "./src/study-plan.js",
   "./src/storage.js",
   "./vendor/lucide.min.js",
   "./assets/icon.svg",

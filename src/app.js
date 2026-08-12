@@ -30,12 +30,22 @@ import {
 } from "./domain.js";
 import {
   clearPersistedState,
+  deleteTaskAttachment,
+  deleteTaskAttachments,
   downloadBackup,
+  loadTaskAttachment,
   loadPersistedState,
   readBackup,
+  saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
 } from "./storage.js";
+import {
+  BUILTIN_PLAN_VERSION,
+  PLAN_PHASES,
+  installBuiltinStudyPlan,
+  planTasksForDate
+} from "./study-plan.js";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -73,7 +83,8 @@ const runtime = {
   statisticsRange: "week",
   showArchived: false,
   modal: null,
-  currentDateKey: dateKey()
+  currentDateKey: dateKey(),
+  boardPhase: "foundation"
 };
 
 function escapeHTML(value) {
@@ -115,6 +126,14 @@ function priorityLabel(priority) {
 
 function sessionLabel(type) {
   return sessionTypes.find(item => item.value === type)?.label ?? "专注";
+}
+
+function taskPomodoroCount(taskId) {
+  return state.pomodoroRecords.filter(record => (
+    record.taskId === taskId
+    && record.type === "focus"
+    && record.state === "completed"
+  )).length;
 }
 
 function applyAppearance() {
@@ -238,6 +257,9 @@ function renderCountdown() {
 function renderTaskContextRow(context, style = "todo") {
   const { task, subject, chapter } = context;
   const dueText = task.dueAt ? formatTime(task.dueAt) : "";
+  const completedPomodoros = taskPomodoroCount(task.id);
+  const pomodoroText = task.planKey ? ` · ${completedPomodoros}/${task.pomodoroTarget ?? 4} 番茄` : "";
+  const dateText = style === "backlog" && task.planDate ? ` · ${formatDate(task.planDate)}` : "";
   return `
     <article class="task-row" draggable="${style === "todo"}" data-task-id="${task.id}">
       ${style === "todo" ? `<button type="button" class="drag-handle" title="拖动排序" aria-label="拖动 ${escapeHTML(task.title)} 调整顺序">${icon("grip-vertical", 18)}</button>` : ""}
@@ -247,9 +269,12 @@ function renderTaskContextRow(context, style = "todo") {
           <strong>${escapeHTML(task.title || "未命名任务")}</strong>
           <span class="priority priority-${task.priority}">${priorityLabel(task.priority)}</span>
         </div>
-        <p>${escapeHTML(subject.name)} · ${escapeHTML(chapter.name)}${dueText && style !== "timeline" ? ` · ${dueText}` : ""}</p>
+        <p>${escapeHTML(subject.name)} · ${escapeHTML(chapter.name)}${dueText && !["timeline", "backlog"].includes(style) ? ` · ${dueText}` : ""}${dateText}${pomodoroText}</p>
       </div>
       <div class="row-actions">
+        <button class="icon-button" data-action="open-materials" data-task-id="${task.id}" title="资料与笔记" aria-label="打开 ${escapeHTML(task.title)} 的资料与笔记">
+          ${icon("paperclip", 17)}
+        </button>
         <button class="icon-button success" data-action="complete-task" data-task-id="${task.id}" title="完成" aria-label="完成 ${escapeHTML(task.title)}">
           ${icon("check", 18)}
         </button>
@@ -266,6 +291,9 @@ function renderTodayPage() {
   const key = dateKey(now);
   const note = state.dailyNotes[key] ?? { goal: "", content: "", reflection: "" };
   const sections = todaySections(state, now);
+  const plannedTasks = planTasksForDate(state, now);
+  const completedPlannedTasks = plannedTasks.filter(({ task }) => task.status === "completed").length;
+  const completedPomodoros = plannedTasks.reduce((sum, { task }) => sum + Math.min(taskPomodoroCount(task.id), task.pomodoroTarget ?? 4), 0);
   const todayFocusSeconds = state.pomodoroRecords
     .filter(record => record.type === "focus"
       && ["completed", "endedEarly"].includes(record.state)
@@ -278,10 +306,21 @@ function renderTodayPage() {
       ${pageHeader("今日", formatDate(now, { month: "long", day: "numeric", weekday: "long" }))}
       ${renderCountdown()}
 
+      <section class="daily-plan-band">
+        <div>
+          <span>今日固定计划</span>
+          <strong>8 小时 · 四科各 2 小时</strong>
+        </div>
+        <div class="daily-plan-metrics">
+          <span><strong>${completedPlannedTasks}/4</strong> 学习块</span>
+          <span><strong>${completedPomodoros}/16</strong> 番茄</span>
+        </div>
+      </section>
+
       <section class="section-block goal-section">
         <div class="section-heading">
           <div><span class="section-icon">${icon("target", 19)}</span><h2>今日目标</h2></div>
-          <span>${durationText(todayFocusSeconds)} / ${state.settings.dailyGoalMinutes} 分钟</span>
+          <span>${durationText(todayFocusSeconds)} / ${state.settings.dailyGoalMinutes} 分钟有效专注</span>
         </div>
         <textarea id="daily-goal" class="goal-input" rows="2" maxlength="180" placeholder="写下今天最重要的学习目标">${escapeHTML(note.goal)}</textarea>
         ${progressBar(todayFocusSeconds / targetSeconds, "今日学习目标")}
@@ -308,6 +347,15 @@ function renderTodayPage() {
         </div>
       </section>
 
+      ${sections.backlog.length ? `
+        <section class="section-block backlog-section">
+          <div class="section-heading"><div><span class="section-icon red">${icon("history", 19)}</span><h2>计划积压</h2></div><span>${sections.backlog.length} 项</span></div>
+          <div class="task-list">
+            ${sections.backlog.slice(0, 12).map(item => renderTaskContextRow(item, "backlog")).join("")}
+          </div>
+          ${sections.backlog.length > 12 ? `<p class="backlog-more">另有 ${sections.backlog.length - 12} 项，请在看板按阶段处理。</p>` : ""}
+        </section>` : ""}
+
       <button class="primary-command quick-focus" data-action="quick-focus">
         ${icon("play", 19)}<span>开始专注</span>
       </button>
@@ -316,6 +364,7 @@ function renderTodayPage() {
 
 function renderBoardTask(context) {
   const { task, subject, module, chapter } = context;
+  const materialCount = (task.attachments?.length ?? 0) + (task.resourceLinks?.length ?? 0);
   return `
     <article class="board-task ${task.status === "completed" ? "is-completed" : ""}">
       <button class="task-check" data-action="toggle-task-complete" data-task-id="${task.id}" title="${task.status === "completed" ? "重新打开" : "完成"}" aria-label="${task.status === "completed" ? "重新打开" : "完成"} ${escapeHTML(task.title)}">
@@ -326,13 +375,14 @@ function renderBoardTask(context) {
           <strong>${escapeHTML(task.title || "未命名任务")}</strong>
           ${task.isReview ? `<span class="review-badge">复习 ${task.reviewStage}/5</span>` : ""}
         </div>
-        <p>${statusLabel(task.status)} · ${priorityLabel(task.priority)} · 预计 ${task.estimatedMinutes} 分钟${task.dueAt ? ` · ${formatDate(task.dueAt)}` : ""}</p>
+        <p>${statusLabel(task.status)} · ${priorityLabel(task.priority)} · ${task.planKey ? `${taskPomodoroCount(task.id)}/${task.pomodoroTarget ?? 4} 番茄` : `预计 ${task.estimatedMinutes} 分钟`}${task.dueAt ? ` · ${formatDate(task.dueAt)}` : ""}</p>
         ${task.tags?.length ? `<div class="tag-line">${task.tags.map(tagId => {
           const tag = state.tags.find(item => item.id === tagId);
           return tag ? `<span style="--tag-color:${escapeHTML(tag.color)}">${escapeHTML(tag.name)}</span>` : "";
         }).join("")}</div>` : ""}
       </div>
       <div class="row-actions">
+        <button class="icon-button" data-action="open-materials" data-task-id="${task.id}" title="资料与笔记" aria-label="打开 ${escapeHTML(task.title)} 的资料与笔记">${icon(materialCount ? "folder-open" : "paperclip", 17)}</button>
         <button class="icon-button" data-action="edit-task" data-subject-id="${subject.id}" data-module-id="${module.id}" data-chapter-id="${chapter.id}" data-task-id="${task.id}" title="编辑任务" aria-label="编辑 ${escapeHTML(task.title)}">${icon("pencil", 17)}</button>
         <button class="icon-button danger" data-action="delete-task" data-subject-id="${subject.id}" data-module-id="${module.id}" data-chapter-id="${chapter.id}" data-task-id="${task.id}" title="删除任务" aria-label="删除 ${escapeHTML(task.title)}">${icon("trash-2", 17)}</button>
       </div>
@@ -345,7 +395,7 @@ function renderChapter(subject, module, chapter) {
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const progress = hierarchyProgress(chapter);
   return `
-    <details class="hierarchy chapter-level" open>
+    <details class="hierarchy chapter-level" ${chapter.planKey ? "" : "open"}>
       <summary>
         <div class="summary-main">
           <span class="disclosure">${icon("chevron-right", 17)}</span>
@@ -371,7 +421,7 @@ function renderModule(subject, module) {
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const progress = hierarchyProgress(module);
   return `
-    <details class="hierarchy module-level" open>
+    <details class="hierarchy module-level" ${module.planKey ? "" : "open"}>
       <summary>
         <div class="summary-main">
           <span class="disclosure">${icon("chevron-right", 18)}</span>
@@ -393,7 +443,8 @@ function renderModule(subject, module) {
 
 function renderSubject(subject) {
   const visibleModules = (subject.modules ?? [])
-    .filter(module => runtime.showArchived || !module.archived)
+    .filter(module => (runtime.showArchived || !module.archived)
+      && (runtime.boardPhase === "all" || !module.planKey || module.planKey.endsWith(`:${runtime.boardPhase}`)))
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const progress = hierarchyProgress(subject);
   return `
@@ -423,6 +474,9 @@ function renderBoardPage() {
     .filter(subject => runtime.showArchived || !subject.archived)
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const overall = hierarchyProgress({ modules: state.subjects });
+  const currentPhase = state.planning?.phaseSchedule?.find(phase => (
+    dateKey() >= phase.startDate && dateKey() <= phase.endDate
+  ));
   return `
     <div class="page board-page">
       ${pageHeader("看板", `${overall.completed}/${overall.total} 项任务完成`, `
@@ -435,6 +489,16 @@ function renderBoardPage() {
         <div class="overview-progress">${progressBar(overall.value, "备考总进度")}</div>
         <label class="inline-toggle"><input type="checkbox" id="show-archived" ${runtime.showArchived ? "checked" : ""}><span>显示归档</span></label>
       </section>
+      ${currentPhase ? `
+        <section class="plan-overview-strip">
+          <div><span>当前阶段</span><strong>${escapeHTML(currentPhase.name)}</strong></div>
+          <p>${escapeHTML(currentPhase.objective)}</p>
+          <span>${formatDate(currentPhase.startDate)} - ${formatDate(currentPhase.endDate)}</span>
+        </section>` : ""}
+      <div class="segmented-control phase-filter" role="tablist" aria-label="规划阶段">
+        <button data-action="board-phase" data-phase="all" class="${runtime.boardPhase === "all" ? "is-selected" : ""}">全部</button>
+        ${PLAN_PHASES.map(phase => `<button data-action="board-phase" data-phase="${phase.key}" class="${runtime.boardPhase === phase.key ? "is-selected" : ""}">${phase.name.replace(/阶段[一二三四五]·/, "")}</button>`).join("")}
+      </div>
       <div class="subject-list">
         ${visibleSubjects.length ? visibleSubjects.map(renderSubject).join("") : emptyState("layout-list", "还没有科目")}
       </div>
@@ -445,6 +509,7 @@ function renderFocusPage() {
   const record = activeFocusRecord(state);
   const snapshot = record ? focusSnapshot(record) : null;
   const type = record?.type ?? runtime.sessionType;
+  const today = dateKey();
   const durations = {
     focus: state.settings.focusMinutes * 60,
     shortBreak: state.settings.shortBreakMinutes * 60,
@@ -453,9 +518,15 @@ function renderFocusPage() {
   const remaining = snapshot?.remainingSeconds ?? durations[type];
   const progress = snapshot?.progress ?? 0;
   const availableTasks = getTaskContexts(state)
-    .filter(({ task }) => task.status !== "completed")
-    .sort((a, b) => a.task.title.localeCompare(b.task.title, "zh-CN"));
-  const today = dateKey();
+    .filter(({ task }) => task.status !== "completed" && (!task.planDate || task.planDate <= today))
+    .sort((a, b) => {
+      const dateComparison = String(b.task.planDate ?? today).localeCompare(String(a.task.planDate ?? today));
+      return dateComparison || new Date(a.task.scheduledAt ?? a.task.dueAt ?? 0) - new Date(b.task.scheduledAt ?? b.task.dueAt ?? 0);
+    });
+  const selectedTaskId = availableTasks.some(({ task }) => task.id === runtime.focusTaskId)
+    ? runtime.focusTaskId
+    : availableTasks.find(({ task }) => task.planDate === today)?.task.id ?? availableTasks[0]?.task.id ?? "";
+  runtime.focusTaskId = selectedTaskId;
   const todayRecords = state.pomodoroRecords.filter(item =>
     item.type === "focus"
       && ["completed", "endedEarly"].includes(item.state)
@@ -492,7 +563,7 @@ function renderFocusPage() {
             <span>关联任务</span>
             <select id="focus-task-select">
               <option value="">自由专注</option>
-              ${availableTasks.map(({ task, subject }) => `<option value="${task.id}" ${runtime.focusTaskId === task.id ? "selected" : ""}>${escapeHTML(subject.name)} · ${escapeHTML(task.title)}</option>`).join("")}
+              ${availableTasks.map(({ task, subject }) => `<option value="${task.id}" ${selectedTaskId === task.id ? "selected" : ""}>${escapeHTML(subject.name)} · ${escapeHTML(task.title)}</option>`).join("")}
             </select>
           </label>` : ""}
         <div class="timer-controls">
@@ -586,6 +657,9 @@ function renderStatisticsPage() {
 
 function renderSettingsPage() {
   const isStandalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const planning = state.planning;
+  const builtinTaskCount = getTaskContexts(state, { includeArchived: true })
+    .filter(({ task }) => task.planKey?.startsWith(`${BUILTIN_PLAN_VERSION}:`)).length;
   return `
     <div class="page settings-page">
       ${pageHeader("我的", "考试配置与本地数据")}
@@ -598,7 +672,7 @@ function renderSettingsPage() {
             ${textField("targetMajor", "目标专业", state.settings.targetMajor, true)}
             ${dateField("preparationStartDate", "备考开始", state.settings.preparationStartDate)}
             ${dateField("examDate", "考试日期", state.settings.examDate)}
-            ${numberField("dailyGoalMinutes", "每日目标（分钟）", state.settings.dailyGoalMinutes, 30, 1440, 30)}
+            ${numberField("dailyGoalMinutes", "每日有效专注（分钟）", state.settings.dailyGoalMinutes, 30, 1440, 30)}
           </div>
         </section>
         <section class="form-section">
@@ -617,9 +691,37 @@ function renderSettingsPage() {
         </section>
         <button class="primary-command save-settings" type="submit">${icon("save", 18)}<span>保存设置</span></button>
       </form>
+      ${planning ? `
+        <section class="form-section plan-settings-section">
+          <div class="plan-settings-heading">
+            <div><h2>内置复习规划</h2><p>${formatDate(planning.startDate)} - ${formatDate(planning.endDate)}</p></div>
+            <span class="status-pill">${builtinTaskCount} 项</span>
+          </div>
+          <div class="plan-quota-grid">
+            <span><strong>${planning.dailyStudyMinutes}</strong><small>每日排期分钟</small></span>
+            <span><strong>${planning.dailyFocusMinutes}</strong><small>有效专注分钟</small></span>
+            <span><strong>${planning.subjectPomodoroTarget}</strong><small>每科番茄</small></span>
+            <span><strong>${planning.dailyPomodoroTarget}</strong><small>每日番茄</small></span>
+          </div>
+          <div class="phase-schedule-list">
+            ${planning.phaseSchedule.map(phase => `
+              <div><span>${escapeHTML(phase.name)}</span><small>${formatDate(phase.startDate)} - ${formatDate(phase.endDate)}</small></div>
+            `).join("")}
+          </div>
+          <details class="plan-source-details">
+            <summary>规划依据</summary>
+            <div class="plan-source-list">
+              ${planning.sources.map(source => source.url
+                ? `<a href="${escapeHTML(source.url)}" target="_blank" rel="noopener noreferrer"><span>${escapeHTML(source.title)}</span><small>${escapeHTML(source.type)}</small>${icon("external-link", 15)}</a>`
+                : `<div><span>${escapeHTML(source.title)}</span><small>${escapeHTML(source.type)}</small></div>`
+              ).join("")}
+            </div>
+          </details>
+          <button class="secondary-command" data-action="rebuild-plan">${icon("refresh-cw", 17)}<span>恢复缺失规划</span></button>
+        </section>` : ""}
       <section class="form-section data-section">
         <h2>数据与安装</h2>
-        <div class="data-row"><div>${icon("database", 19)}<span><strong>本地数据库</strong><small>IndexedDB · 仅保存在当前浏览器</small></span></div><span class="status-pill">正常</span></div>
+        <div class="data-row"><div>${icon("database", 19)}<span><strong>本地数据库</strong><small>任务与附件仅保存在当前浏览器；JSON 备份不包含附件文件</small></span></div><span class="status-pill">正常</span></div>
         <div class="data-actions">
           <button class="secondary-command" data-action="export-backup">${icon("download", 18)}<span>导出备份</span></button>
           <button class="secondary-command" data-action="import-backup">${icon("upload", 18)}<span>导入备份</span></button>
@@ -628,7 +730,7 @@ function renderSettingsPage() {
         </div>
         <button class="text-danger-button" data-action="reset-data">清除全部本地数据</button>
       </section>
-      <section class="about-section"><span>北邮新传备考看板</span><span>Web App 1.0</span></section>
+      <section class="about-section"><span>北邮新传备考看板</span><span>Web App 1.1</span></section>
     </div>`;
 }
 
@@ -752,6 +854,80 @@ function openTagManager() {
       ${state.tags.length ? state.tags.map(tag => `
         <div><span class="tag-chip" style="--tag-color:${escapeHTML(tag.color)}">${escapeHTML(tag.name)}</span><button class="icon-button danger" data-action="delete-tag" data-tag-id="${tag.id}" title="删除标签" aria-label="删除 ${escapeHTML(tag.name)}">${icon("trash-2", 16)}</button></div>`).join("") : emptyState("tags", "还没有标签")}
     </div>`, { title: "标签管理", kind: "tags" });
+}
+
+function formatFileSize(bytes) {
+  const size = Math.max(Number(bytes) || 0, 0);
+  if (size < 1_024) return `${size} B`;
+  if (size < 1_048_576) return `${Math.round(size / 1_024)} KB`;
+  return `${(size / 1_048_576).toFixed(1)} MB`;
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function openMaterials(taskId, draft = {}) {
+  const context = findTaskContext(state, taskId);
+  if (!context) return;
+  const { task, subject, chapter } = context;
+  openModal(`
+    <div class="material-context">
+      <span>${escapeHTML(subject.name)} · ${escapeHTML(chapter.name)}</span>
+      <strong>${escapeHTML(task.title)}</strong>
+      ${task.details ? `<p>${escapeHTML(task.details).replaceAll("\n", "<br>")}</p>` : ""}
+    </div>
+    <form id="materials-form" data-task-id="${task.id}" class="modal-form materials-form">
+      <label class="field"><span>学习笔记</span><textarea name="studyNotes" rows="7" maxlength="12000" placeholder="整理概念框架、案例、错因和答题表达">${escapeHTML(draft.studyNotes ?? task.studyNotes ?? "")}</textarea></label>
+      <section class="material-section">
+        <div class="material-section-heading"><div><strong>资料链接</strong><small>网页、云盘、在线文档</small></div></div>
+        <div class="resource-list">
+          ${(task.resourceLinks ?? []).length ? task.resourceLinks.map(link => `
+            <div class="resource-row">
+              <a href="${escapeHTML(link.url)}" target="_blank" rel="noopener noreferrer">${icon("link", 16)}<span>${escapeHTML(link.title || link.url)}</span></a>
+              <button type="button" class="icon-button danger" data-action="delete-resource-link" data-task-id="${task.id}" data-link-id="${link.id}" title="删除链接" aria-label="删除链接">${icon("trash-2", 16)}</button>
+            </div>`).join("") : `<p class="material-empty">还没有资料链接</p>`}
+        </div>
+        <div class="inline-add-form material-link-form">
+          <input name="linkTitle" type="text" maxlength="100" value="${escapeHTML(draft.linkTitle ?? "")}" placeholder="资料名称">
+          <input name="linkUrl" type="url" inputmode="url" value="${escapeHTML(draft.linkUrl ?? "")}" placeholder="https://...">
+        </div>
+      </section>
+      <section class="material-section">
+        <div class="material-section-heading"><div><strong>本机附件</strong><small>单个不超过 25 MB，只保存在当前设备</small></div></div>
+        <div class="attachment-list">
+          ${(task.attachments ?? []).length ? task.attachments.map(file => `
+            <div class="resource-row">
+              <button type="button" class="attachment-open" data-action="open-attachment" data-attachment-id="${file.id}">${icon("file", 17)}<span><strong>${escapeHTML(file.name)}</strong><small>${formatFileSize(file.size)}</small></span></button>
+              <button type="button" class="icon-button danger" data-action="delete-attachment" data-task-id="${task.id}" data-attachment-id="${file.id}" title="删除附件" aria-label="删除 ${escapeHTML(file.name)}">${icon("trash-2", 16)}</button>
+            </div>`).join("") : `<p class="material-empty">还没有附件</p>`}
+        </div>
+        <label class="file-picker"><input type="file" id="task-attachment-file" data-task-id="${task.id}" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.zip"><span>${icon("paperclip", 17)}选择文件</span></label>
+      </section>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="close-modal">关闭</button><button type="submit" class="primary-command">${icon("save", 17)}<span>保存笔记与链接</span></button></div>
+    </form>`, { title: "资料与笔记", kind: "materials", wide: true });
+}
+
+async function openStoredAttachment(attachmentId) {
+  try {
+    const record = await loadTaskAttachment(attachmentId);
+    if (!record?.blob) throw new Error("附件不存在，可能来自其他设备的备份");
+    const url = URL.createObjectURL(record.blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.download = record.name;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (error) {
+    showToast(error.message || "无法打开附件", "error");
+  }
 }
 
 function openFocusSettings() {
@@ -909,6 +1085,16 @@ function deleteEntity(action, dataset) {
     "delete-task": context.task?.title
   };
   if (!confirm(`确定删除“${labels[action] ?? "此项目"}”吗？下级内容也会一并删除。`)) return;
+  const attachmentIds = action === "delete-task"
+    ? (context.task?.attachments ?? []).map(file => file.id)
+    : action === "delete-chapter"
+      ? (context.chapter?.tasks ?? []).flatMap(task => (task.attachments ?? []).map(file => file.id))
+      : action === "delete-module"
+        ? (context.module?.chapters ?? []).flatMap(chapter => (chapter.tasks ?? []).flatMap(task => (task.attachments ?? []).map(file => file.id)))
+        : action === "delete-subject"
+          ? (context.subject?.modules ?? []).flatMap(module => (module.chapters ?? []).flatMap(chapter => (chapter.tasks ?? []).flatMap(task => (task.attachments ?? []).map(file => file.id))))
+          : [];
+  deleteTaskAttachments(attachmentIds).catch(error => console.warn("Attachment cleanup failed", error));
   if (action === "delete-subject") state.subjects = state.subjects.filter(item => item.id !== dataset.subjectId);
   if (action === "delete-module") context.subject.modules = context.subject.modules.filter(item => item.id !== dataset.moduleId);
   if (action === "delete-chapter") context.module.chapters = context.module.chapters.filter(item => item.id !== dataset.chapterId);
@@ -984,6 +1170,16 @@ async function finishActiveRecord(finalState) {
   const record = activeFocusRecord(state);
   if (!record) return;
   finishFocusRecord(state, record, finalState);
+  let completedPlanBlock = false;
+  if (finalState === "completed" && record.type === "focus" && record.taskId) {
+    const context = findTaskContext(state, record.taskId);
+    if (context?.task.planKey
+      && context.task.status !== "completed"
+      && taskPomodoroCount(record.taskId) >= (context.task.pomodoroTarget ?? 4)) {
+      completeTask(state, record.taskId);
+      completedPlanBlock = true;
+    }
+  }
   await saveNow();
   closeModal();
   if (finalState === "completed") {
@@ -999,7 +1195,7 @@ async function finishActiveRecord(finalState) {
       await saveNow();
       showToast(`${sessionLabel(record.type)}已完成，${sessionLabel(next)}已开始`);
     } else {
-      showToast(`${sessionLabel(record.type)}已完成`);
+      showToast(completedPlanBlock ? "4 个番茄完成，本科目学习块已打卡" : `${sessionLabel(record.type)}已完成`);
     }
   } else if (finalState === "endedEarly") {
     showToast("已记录本次有效时长");
@@ -1084,6 +1280,30 @@ async function handleClick(event) {
   }
   if (action === "move-task-up") return reorderTodayTask(button.dataset.taskId, -1);
   if (action === "move-task-down") return reorderTodayTask(button.dataset.taskId, 1);
+  if (action === "open-materials") return openMaterials(button.dataset.taskId);
+  if (action === "open-attachment") return openStoredAttachment(button.dataset.attachmentId);
+  if (action === "delete-attachment") {
+    if (!confirm("确定删除这个附件吗？")) return;
+    const context = findTaskContext(state, button.dataset.taskId);
+    await deleteTaskAttachment(button.dataset.attachmentId);
+    if (context) context.task.attachments = context.task.attachments.filter(file => file.id !== button.dataset.attachmentId);
+    await saveNow();
+    openMaterials(button.dataset.taskId);
+    showToast("附件已删除");
+    return;
+  }
+  if (action === "delete-resource-link") {
+    const context = findTaskContext(state, button.dataset.taskId);
+    if (context) context.task.resourceLinks = context.task.resourceLinks.filter(link => link.id !== button.dataset.linkId);
+    await saveNow();
+    openMaterials(button.dataset.taskId);
+    return;
+  }
+  if (action === "board-phase") {
+    runtime.boardPhase = button.dataset.phase;
+    renderShell();
+    return;
+  }
   if (action === "add-subject") return entityForm("subject");
   if (action === "add-module") return entityForm("module", { subjectId: button.dataset.subjectId });
   if (action === "add-chapter") return entityForm("chapter", { subjectId: button.dataset.subjectId, moduleId: button.dataset.moduleId });
@@ -1134,10 +1354,18 @@ async function handleClick(event) {
   }
   if (action === "export-backup") return downloadBackup(state);
   if (action === "import-backup") return document.querySelector("#backup-file")?.click();
+  if (action === "rebuild-plan") {
+    const result = installBuiltinStudyPlan(state, new Date(), { repair: true });
+    await saveNow();
+    renderShell();
+    showToast(result.taskCount ? `已恢复 ${result.taskCount} 项缺失规划` : "内置规划完整，无需恢复");
+    return;
+  }
   if (action === "reset-data") {
     if (!confirm("确定清除全部本地数据吗？此操作不能撤销。")) return;
     await clearPersistedState();
     state = createDefaultState();
+    installBuiltinStudyPlan(state);
     runtime.tab = "today";
     runtime.currentDateKey = dateKey();
     await saveNow();
@@ -1151,6 +1379,31 @@ async function handleSubmit(event) {
   event.preventDefault();
   const form = event.target;
   if (form.id === "entity-form") return handleEntitySubmit(form);
+  if (form.id === "materials-form") {
+    const context = findTaskContext(state, form.dataset.taskId);
+    if (!context) return;
+    const data = new FormData(form);
+    context.task.studyNotes = String(data.get("studyNotes") ?? "").trim();
+    const linkUrl = safeExternalUrl(String(data.get("linkUrl") ?? "").trim());
+    const rawLinkUrl = String(data.get("linkUrl") ?? "").trim();
+    if (rawLinkUrl && !linkUrl) {
+      showToast("资料链接必须以 http:// 或 https:// 开头", "error");
+      return;
+    }
+    if (linkUrl) {
+      context.task.resourceLinks.push({
+        id: createId(),
+        title: String(data.get("linkTitle") ?? "").trim() || new URL(linkUrl).hostname,
+        url: linkUrl,
+        createdAt: new Date().toISOString()
+      });
+    }
+    context.task.updatedAt = new Date().toISOString();
+    await saveNow();
+    openMaterials(context.task.id);
+    showToast("资料与笔记已保存");
+    return;
+  }
   if (form.id === "tag-form") {
     const data = new FormData(form);
     const name = String(data.get("name") ?? "").trim();
@@ -1199,7 +1452,7 @@ async function handleSubmit(event) {
       targetMajor: String(data.get("targetMajor") ?? "").trim(),
       preparationStartDate: data.get("preparationStartDate"),
       examDate: data.get("examDate"),
-      dailyGoalMinutes: formNumber(data, "dailyGoalMinutes", 480),
+      dailyGoalMinutes: formNumber(data, "dailyGoalMinutes", 400),
       automaticReview: formBoolean(data, "automaticReview"),
       automaticDeferral: formBoolean(data, "automaticDeferral"),
       notificationsEnabled: formBoolean(data, "notificationsEnabled"),
@@ -1237,18 +1490,48 @@ async function handleChange(event) {
     renderShell();
   }
   if (event.target.id === "focus-task-select") runtime.focusTaskId = event.target.value;
+  if (event.target.id === "task-attachment-file" && event.target.files?.[0]) {
+    const file = event.target.files[0];
+    const taskId = event.target.dataset.taskId;
+    const context = findTaskContext(state, taskId);
+    const form = event.target.closest("form");
+    const draft = form ? {
+      studyNotes: form.elements.studyNotes?.value ?? "",
+      linkTitle: form.elements.linkTitle?.value ?? "",
+      linkUrl: form.elements.linkUrl?.value ?? ""
+    } : {};
+    if (!context) return;
+    if (file.size > 25 * 1_048_576) {
+      showToast("单个附件不能超过 25 MB", "error");
+      event.target.value = "";
+      return;
+    }
+    try {
+      const metadata = await saveTaskAttachment(taskId, file);
+      context.task.attachments.push(metadata);
+      context.task.updatedAt = new Date().toISOString();
+      await saveNow();
+      openMaterials(taskId, draft);
+      showToast("附件已保存到当前设备");
+    } catch (error) {
+      showToast(error.message || "附件保存失败", "error");
+    }
+    return;
+  }
   if (event.target.id === "backup-file" && event.target.files?.[0]) {
     try {
       const imported = normalizeState(await readBackup(event.target.files[0]));
       if (!confirm("导入会覆盖当前浏览器中的全部数据，确定继续吗？")) return;
       state = imported;
+      const planResult = installBuiltinStudyPlan(state);
       runtime.tab = state.ui.selectedTab ?? "today";
       runtime.currentDateKey = dateKey();
       const deferredCount = runAutomaticDeferral(state);
       applyAppearance();
       await saveNow();
       renderShell();
-      showToast(deferredCount ? `备份已导入，并顺延 ${deferredCount} 项任务` : "备份已导入");
+      if (planResult.installed) showToast(`备份已导入，并补充 ${planResult.taskCount} 项内置规划`);
+      else showToast(deferredCount ? `备份已导入，并顺延 ${deferredCount} 项任务` : "备份已导入");
     } catch (error) {
       showToast(error.message || "导入失败", "error");
     }
@@ -1376,10 +1659,11 @@ async function registerServiceWorker() {
 
 async function initialize() {
   state = normalizeState(await loadPersistedState());
+  const planResult = installBuiltinStudyPlan(state);
   runtime.tab = state.ui.selectedTab ?? "today";
   runtime.currentDateKey = dateKey();
   const deferredCount = runAutomaticDeferral(state);
-  if (deferredCount) await saveNow();
+  if (deferredCount || planResult.installed) await saveNow();
   applyAppearance();
   renderShell();
   startFocusTicker();
@@ -1399,6 +1683,7 @@ async function initialize() {
   appElement.addEventListener("pointercancel", handlePointerCancel);
   modalRoot.addEventListener("click", handleClick);
   modalRoot.addEventListener("submit", handleSubmit);
+  modalRoot.addEventListener("change", handleChange);
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && runtime.modal) closeModal();
   });
@@ -1415,7 +1700,8 @@ async function initialize() {
   window.addEventListener("focus", refreshCurrentDay);
   window.addEventListener("pagehide", () => saveEmergencySnapshot(state));
 
-  if (deferredCount) showToast(`已自动顺延 ${deferredCount} 项逾期任务`);
+  if (planResult.installed) showToast(`已写入 ${planResult.taskCount} 项四科备考计划`);
+  else if (deferredCount) showToast(`已自动顺延 ${deferredCount} 项逾期任务`);
 }
 
 initialize().catch(error => {

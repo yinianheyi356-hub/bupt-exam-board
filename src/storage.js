@@ -1,6 +1,7 @@
 const DATABASE_NAME = "bupt-exam-board";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const STORE_NAME = "key-value";
+const ATTACHMENT_STORE_NAME = "task-attachments";
 const STATE_KEY = "current-state";
 const LOCAL_STORAGE_KEY = "bupt-exam-board-state";
 
@@ -17,18 +18,22 @@ function openDatabase() {
       if (!database.objectStoreNames.contains(STORE_NAME)) {
         database.createObjectStore(STORE_NAME);
       }
+      if (!database.objectStoreNames.contains(ATTACHMENT_STORE_NAME)) {
+        const attachments = database.createObjectStore(ATTACHMENT_STORE_NAME, { keyPath: "id" });
+        attachments.createIndex("taskId", "taskId", { unique: false });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("无法打开本地数据库"));
   });
 }
 
-async function runTransaction(mode, operation) {
+async function runStoreTransaction(storeName, mode, operation) {
   const database = await openDatabase();
   try {
     return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(STORE_NAME, mode);
-      const store = transaction.objectStore(STORE_NAME);
+      const transaction = database.transaction(storeName, mode);
+      const store = transaction.objectStore(storeName);
       const request = operation(store);
       let result;
       request.onsuccess = () => { result = request.result; };
@@ -40,6 +45,10 @@ async function runTransaction(mode, operation) {
   } finally {
     database.close();
   }
+}
+
+async function runTransaction(mode, operation) {
+  return runStoreTransaction(STORE_NAME, mode, operation);
 }
 
 export async function loadPersistedState() {
@@ -78,7 +87,19 @@ export async function savePersistedState(state) {
 
 export async function clearPersistedState() {
   try {
-    await runTransaction("readwrite", store => store.delete(STATE_KEY));
+    const database = await openDatabase();
+    try {
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction([STORE_NAME, ATTACHMENT_STORE_NAME], "readwrite");
+        transaction.objectStore(STORE_NAME).delete(STATE_KEY);
+        transaction.objectStore(ATTACHMENT_STORE_NAME).clear();
+        transaction.oncomplete = resolve;
+        transaction.onabort = () => reject(transaction.error ?? new Error("本地数据清除失败"));
+        transaction.onerror = () => reject(transaction.error ?? new Error("本地数据清除失败"));
+      });
+    } finally {
+      database.close();
+    }
   } catch {
     // localStorage 回退仍会在下方清除。
   }
@@ -90,6 +111,61 @@ export function saveEmergencySnapshot(state) {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(state));
   } catch {
     // 存储空间不足时，保留最近一次已提交到 IndexedDB 的版本。
+  }
+}
+
+export async function saveTaskAttachment(taskId, file) {
+  const id = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const record = {
+    id,
+    taskId,
+    name: file.name || "未命名附件",
+    type: file.type || "application/octet-stream",
+    size: file.size,
+    createdAt: new Date().toISOString(),
+    blob: file
+  };
+  await runStoreTransaction(ATTACHMENT_STORE_NAME, "readwrite", store => store.put(record));
+  return {
+    id: record.id,
+    name: record.name,
+    type: record.type,
+    size: record.size,
+    createdAt: record.createdAt
+  };
+}
+
+export async function loadTaskAttachment(attachmentId) {
+  return runStoreTransaction(
+    ATTACHMENT_STORE_NAME,
+    "readonly",
+    store => store.get(attachmentId)
+  );
+}
+
+export async function deleteTaskAttachment(attachmentId) {
+  return runStoreTransaction(
+    ATTACHMENT_STORE_NAME,
+    "readwrite",
+    store => store.delete(attachmentId)
+  );
+}
+
+export async function deleteTaskAttachments(attachmentIds = []) {
+  if (!attachmentIds.length) return;
+  const database = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(ATTACHMENT_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(ATTACHMENT_STORE_NAME);
+      attachmentIds.forEach(id => store.delete(id));
+      transaction.oncomplete = resolve;
+      transaction.onabort = () => reject(transaction.error ?? new Error("附件删除失败"));
+      transaction.onerror = () => reject(transaction.error ?? new Error("附件删除失败"));
+    });
+  } finally {
+    database.close();
   }
 }
 
