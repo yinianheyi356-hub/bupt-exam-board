@@ -28,7 +28,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.2.0";
+} from "./domain.js?v=1.3.0";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -40,15 +40,15 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.2.0";
+} from "./storage.js?v=1.3.0";
 import {
   BUILTIN_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.2.0";
+} from "./study-plan.js?v=1.3.0";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -467,8 +467,10 @@ function renderModule(subject, module) {
     .filter(chapter => runtime.showArchived || !chapter.archived)
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const progress = hierarchyProgress(module);
+  const isPlanModule = Boolean(module.planKey);
+  const isPoliticsOutlineModule = module.planKey?.startsWith("bupt-politics-");
   return `
-    <details class="hierarchy module-level" ${module.planKey ? "" : "open"}>
+    <details class="hierarchy module-level" ${isPlanModule && !isPoliticsOutlineModule ? "" : "open"}>
       <summary>
         <div class="summary-main">
           <span class="disclosure">${icon("chevron-right", 18)}</span>
@@ -491,7 +493,10 @@ function renderModule(subject, module) {
 function renderSubject(subject) {
   const visibleModules = (subject.modules ?? [])
     .filter(module => (runtime.showArchived || !module.archived)
-      && (runtime.boardPhase === "all" || !module.planKey || module.planKey.endsWith(`:${runtime.boardPhase}`)))
+      && (runtime.boardPhase === "all"
+        || !module.planKey
+        || module.planKey.startsWith("bupt-politics-")
+        || module.planKey.endsWith(`:${runtime.boardPhase}`)))
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const progress = hierarchyProgress(subject);
   return `
@@ -1676,6 +1681,7 @@ async function handleSubmit(event) {
       notificationsEnabled: formBoolean(data, "notificationsEnabled"),
       appearance: data.get("appearance")
     });
+    const planningExamDateChanged = state.planning?.examDate !== state.settings.examDate;
     if (state.settings.notificationsEnabled && "Notification" in window && Notification.permission === "default") {
       try {
         const permission = await Notification.requestPermission();
@@ -1685,10 +1691,19 @@ async function handleSubmit(event) {
       }
     }
     const deferredCount = runAutomaticDeferral(state);
+    const planResult = planningExamDateChanged
+      ? installBuiltinStudyPlan(state)
+      : null;
     applyAppearance();
     await saveNow();
     renderShell();
-    showToast(deferredCount ? `设置已保存，并顺延 ${deferredCount} 项任务` : "设置已保存");
+    if (planResult?.taskCount) {
+      showToast(`设置已保存，并补充 ${planResult.taskCount} 项规划`);
+    } else if (deferredCount) {
+      showToast(`设置已保存，并顺延 ${deferredCount} 项任务`);
+    } else {
+      showToast("设置已保存");
+    }
   }
 }
 

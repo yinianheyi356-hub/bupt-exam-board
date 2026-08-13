@@ -950,11 +950,16 @@ input[type="checkbox"] {
   min-width: 0;
 }
 
-.summary-main strong,
 .summary-main small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.summary-main strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .summary-main small {

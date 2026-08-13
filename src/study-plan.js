@@ -4,10 +4,133 @@ import {
   createModule,
   createTask,
   dateKey,
+  daysBetween,
+  getTaskContexts,
   startOfDay
-} from "./domain.js?v=1.2.0";
+} from "./domain.js?v=1.3.0";
 
-export const BUILTIN_PLAN_VERSION = "bupt-mjc-2027-v1";
+export const BUILTIN_PLAN_VERSION = "bupt-mjc-2027-v2";
+// 政治目录单独维护版本。四科日程共用 BUILTIN_PLAN_VERSION，政治目录更新时只迁移政治任务。
+export const POLITICS_PLAN_VERSION = "bupt-politics-2027-v2";
+
+// 按用户提供的《考研政治核心考案》目录整理。每一项都是看板中的一个正式章节；
+// 章节编号保留在名称中，便于在看板、笔记和附件之间直接定位原书内容。
+export const POLITICS_OUTLINE = [
+  ["马克思主义基本原理", "导论：马克思主义是关于无产阶级和人类解放的科学"],
+  ["马克思主义基本原理", "第一章 辩证唯物论"],
+  ["马克思主义基本原理", "第二章 唯物辩证法"],
+  ["马克思主义基本原理", "第三章 认识论"],
+  ["马克思主义基本原理", "第四章 唯物史观"],
+  ["马克思主义基本原理", "第五章 资本主义的本质及规律"],
+  ["马克思主义基本原理", "第六章 资本主义的发展及其趋势"],
+  ["马克思主义基本原理", "第七章 社会主义的发展及其规律"],
+  ["马克思主义基本原理", "第八章 共产主义崇高理想及其最终实现"],
+
+  ["毛泽东思想和中国特色社会主义理论体系概论", "导论：马克思主义中国化时代化的历史进程与理论成果"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第一章 毛泽东思想及其历史地位"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第二章 新民主主义革命理论"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第三章 社会主义改造理论"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第四章 社会主义建设道路初步探索的理论成果"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第五章 中国特色社会主义理论体系的形成发展"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第六章 邓小平理论"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第七章 “三个代表”重要思想"],
+  ["毛泽东思想和中国特色社会主义理论体系概论", "第八章 科学发展观"],
+
+  ["习近平新时代中国特色社会主义思想概论", "导论"],
+  ["习近平新时代中国特色社会主义思想概论", "第一章 新时代坚持和发展中国特色社会主义"],
+  ["习近平新时代中国特色社会主义思想概论", "第二章 以中国式现代化全面推进中华民族伟大复兴"],
+  ["习近平新时代中国特色社会主义思想概论", "第三章 坚持党的全面领导"],
+  ["习近平新时代中国特色社会主义思想概论", "第四章 坚持以人民为中心"],
+  ["习近平新时代中国特色社会主义思想概论", "第五章 全面深化改革开放"],
+  ["习近平新时代中国特色社会主义思想概论", "第六章 推动高质量发展"],
+  ["习近平新时代中国特色社会主义思想概论", "第七章 社会主义现代化建设的教育、科技、人才战略"],
+  ["习近平新时代中国特色社会主义思想概论", "第八章 发展全过程人民民主"],
+  ["习近平新时代中国特色社会主义思想概论", "第九章 全面依法治国"],
+  ["习近平新时代中国特色社会主义思想概论", "第十章 建设社会主义文化强国"],
+  ["习近平新时代中国特色社会主义思想概论", "第十一章 以保障和改善民生为重点加强社会建设"],
+  ["习近平新时代中国特色社会主义思想概论", "第十二章 建设社会主义生态文明"],
+  ["习近平新时代中国特色社会主义思想概论", "第十三章 维护和塑造国家安全"],
+  ["习近平新时代中国特色社会主义思想概论", "第十四章 建设巩固国防和强大人民军队"],
+  ["习近平新时代中国特色社会主义思想概论", "第十五章 坚持“一国两制”和推进祖国完全统一"],
+  ["习近平新时代中国特色社会主义思想概论", "第十六章 中国特色大国外交和推动构建人类命运共同体"],
+  ["习近平新时代中国特色社会主义思想概论", "第十七章 全面从严治党"],
+
+  ["中国近现代史纲要", "第一章 进入近代后中华民族的磨难与抗争"],
+  ["中国近现代史纲要", "第二章 不同社会力量对国家出路的早期探索"],
+  ["中国近现代史纲要", "第三章 辛亥革命与君主专制制度的终结"],
+  ["中国近现代史纲要", "第四章 中国共产党成立和中国革命新局面"],
+  ["中国近现代史纲要", "第五章 中国革命的新道路"],
+  ["中国近现代史纲要", "第六章 中华民族的抗日战争"],
+  ["中国近现代史纲要", "第七章 为建立新中国而奋斗"],
+  ["中国近现代史纲要", "第八章 中华人民共和国的成立与中国社会主义建设道路的探索"],
+  ["中国近现代史纲要", "第九章 改革开放与中国特色社会主义的开创和发展"],
+  ["中国近现代史纲要", "第十章 中国特色社会主义进入新时代"],
+
+  ["思想道德与法治", "绪论：担当复兴大任 成就时代新人"],
+  ["思想道德与法治", "第一章 领悟人生真谛 把握人生方向"],
+  ["思想道德与法治", "第二章 追求远大理想 坚定崇高信念"],
+  ["思想道德与法治", "第三章 继承优良传统 弘扬中国精神"],
+  ["思想道德与法治", "第四章 明确价值要求 践行价值准则"],
+  ["思想道德与法治", "第五章 遵守道德规范 锤炼道德品格"],
+  ["思想道德与法治", "第六章 学习法治思想 提升法治素养"]
+];
+
+export const POLITICS_MODULES = [
+  { key: "marxism", name: "马克思主义基本原理", objective: "哲学、政治经济学与科学社会主义的原理框架。" },
+  { key: "mao-zedong", name: "毛泽东思想和中国特色社会主义理论体系概论", objective: "毛泽东思想及中国特色社会主义理论成果的历史脉络。" },
+  { key: "xi-jinping", name: "习近平新时代中国特色社会主义思想概论", objective: "新时代党的创新理论、总体布局与战略安排。" },
+  { key: "modern-history", name: "中国近现代史纲要", objective: "从近代民族苦难到中国特色社会主义新时代的历史主线。" },
+  { key: "ideology-law", name: "思想道德与法治", objective: "理想信念、道德规范、价值准则与法治素养。" }
+];
+
+// 图片目录中的章节属于不同的教材分组。分组信息用于在看板中保留
+// “马克思主义哲学 / 基本问题 / 思想篇”等目录层次，同时仍遵循
+// 科目 -> 模块 -> 章节 -> 任务的四级数据结构。
+const POLITICS_SECTION_RANGES = [
+  { start: 0, end: 0, key: "intro", name: "导论" },
+  { start: 1, end: 4, key: "marxism-philosophy", name: "马克思主义哲学" },
+  { start: 5, end: 6, key: "political-economy", name: "马克思主义政治经济学" },
+  { start: 7, end: 8, key: "scientific-socialism", name: "科学社会主义" },
+  { start: 9, end: 9, key: "intro", name: "导论" },
+  { start: 10, end: 13, key: "mao-zedong", name: "毛泽东思想" },
+  { start: 14, end: 17, key: "socialism-theory", name: "中国特色社会主义理论体系" },
+  { start: 18, end: 18, key: "intro", name: "导论" },
+  { start: 19, end: 23, key: "basic-questions", name: "基本问题" },
+  { start: 24, end: 30, key: "layout", name: "布局安排" },
+  { start: 31, end: 35, key: "conditions", name: "内外条件" },
+  { start: 36, end: 38, key: "old-democratic", name: "旧民主主义革命时期" },
+  { start: 39, end: 42, key: "new-democratic", name: "新民主主义革命时期" },
+  { start: 43, end: 45, key: "new-china", name: "新中国时期" },
+  { start: 46, end: 46, key: "preface", name: "绪论" },
+  { start: 47, end: 49, key: "ideology", name: "思想篇" },
+  { start: 50, end: 51, key: "morality", name: "道德篇" },
+  { start: 52, end: 52, key: "rule-of-law", name: "法治篇" }
+];
+
+const politicsModuleKeyByName = new Map(POLITICS_MODULES.map(module => [module.name, module.key]));
+
+function politicsSectionForIndex(index) {
+  return POLITICS_SECTION_RANGES.find(range => index >= range.start && index <= range.end)
+    ?? { key: "other", name: "其他" };
+}
+
+// 稳定的结构化目录入口。POLITICS_OUTLINE 保持简单的 [模块, 章节] 形式，
+// 供导入/测试使用；安装器使用这里的稳定 ID 写入任务，避免同名“导论”冲突。
+export const POLITICS_OUTLINE_ENTRIES = POLITICS_OUTLINE.map(([moduleName, title], index) => {
+  const section = politicsSectionForIndex(index);
+  const moduleKey = politicsModuleKeyByName.get(moduleName) ?? `module-${index}`;
+  const isOpening = title.startsWith("导论：") || title.startsWith("绪论：") || title === "导论";
+  return {
+    outlineId: `politics-${String(index + 1).padStart(2, "0")}`,
+    index,
+    moduleKey,
+    moduleName,
+    sectionKey: section.key,
+    sectionName: section.name,
+    title,
+    displayName: isOpening ? title : `${section.name} · ${title}`
+  };
+});
 
 export const PLAN_PHASES = [
   { key: "foundation", name: "阶段一·基础建构", ratio: 0.27, objective: "完成大纲首轮覆盖，建立四科知识骨架与错题系统。" },
@@ -414,6 +537,36 @@ function ensureModule(subject, phase) {
   return module;
 }
 
+function ensurePoliticsModule(subject, definition, options = {}) {
+  const moduleDefinition = POLITICS_MODULES.find(item => item.key === definition.moduleKey)
+    ?? POLITICS_MODULES[0];
+  const planKey = `${POLITICS_PLAN_VERSION}:${moduleDefinition.key}`;
+  let module = subject.modules.find(item => item.planKey === planKey);
+  if (!module) {
+    module = createModule(moduleDefinition.name, subject.modules.length);
+    Object.assign(module, {
+      id: `plan-politics-module-${moduleDefinition.key}`,
+      notes: moduleDefinition.objective,
+      planKey,
+      planModuleKey: moduleDefinition.key,
+      weight: 1
+    });
+    subject.modules.push(module);
+  } else {
+    Object.assign(module, {
+      planModuleKey: moduleDefinition.key
+    });
+    // Keep a user's label, notes, and archive choice during normal startup.
+    // The explicit repair action is the opt-in way to restore built-in nodes.
+    if (options.repair) {
+      module.name = moduleDefinition.name;
+      module.notes = moduleDefinition.objective;
+      module.archived = false;
+    }
+  }
+  return module;
+}
+
 function ensureChapter(module, subjectKey, phaseKey, group) {
   const planKey = `${BUILTIN_PLAN_VERSION}:${subjectKey}:${phaseKey}:${group}`;
   let chapter = module.chapters.find(item => item.planKey === planKey);
@@ -424,6 +577,35 @@ function ensureChapter(module, subjectKey, phaseKey, group) {
       planKey
     });
     module.chapters.push(chapter);
+  }
+  return chapter;
+}
+
+function ensurePoliticsChapter(module, entry, options = {}) {
+  const planKey = `${POLITICS_PLAN_VERSION}:${entry.outlineId}`;
+  let chapter = module.chapters.find(item => item.planKey === planKey);
+  if (!chapter) {
+    chapter = createChapter(entry.displayName, module.chapters.length);
+    Object.assign(chapter, {
+      id: `plan-politics-chapter-${entry.outlineId}`,
+      planKey,
+      outlineId: entry.outlineId,
+      outlineTopic: entry.title,
+      outlineSectionKey: entry.sectionKey,
+      outlineSectionName: entry.sectionName
+    });
+    module.chapters.push(chapter);
+  } else {
+    Object.assign(chapter, {
+      outlineId: entry.outlineId,
+      outlineTopic: entry.title,
+      outlineSectionKey: entry.sectionKey,
+      outlineSectionName: entry.sectionName
+    });
+    if (options.repair) {
+      chapter.name = entry.displayName;
+      chapter.archived = false;
+    }
   }
   return chapter;
 }
@@ -447,20 +629,163 @@ function taskDetails(definition, phase, block, title, isWeeklyReview) {
   return `${phase.objective}\n学习块：${block.label}，2 小时，4 个 25 分钟番茄。\n${routine}。\n${output}`;
 }
 
-export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
-  if (state.planning?.version === BUILTIN_PLAN_VERSION && !options.repair) {
-    return { installed: false, taskCount: 0, planning: state.planning };
+function politicsTaskTitle(entry, phase, isWeeklyReview) {
+  const prefixByPhase = {
+    foundation: "基础精读",
+    reinforcement: "强化回忆",
+    application: "选择题与材料输出",
+    sprint: "限时回收",
+    final: "考前口述"
+  };
+  const prefix = prefixByPhase[phase.key] ?? "复习";
+  const title = `${prefix}：${entry.title}`;
+  return isWeeklyReview ? `周复盘：${title}` : title;
+}
+
+function politicsTaskDetails(entry, phase, block, isWeeklyReview) {
+  const reviewLine = isWeeklyReview
+    ? "本周复盘产出：章节框架复述、错题清零、易混概念对比和下周薄弱点清单。"
+    : "本日必须产出：一页章节框架、主动回忆记录、至少 10 道选择题错因或一份材料题答题提纲。";
+  return `${phase.objective}\n目录定位：${entry.moduleName} · ${entry.sectionName} · ${entry.title}\n学习块：${block.label}，2 小时，4 个 25 分钟番茄。\n${isWeeklyReview ? "复述本章核心概念，整理错题并完成一次限时输出。" : "通读教材并标注考点；合上书主动回忆；完成配套选择题；整理错题/材料题。"}\n${reviewLine}`;
+}
+
+function rewritePlanKey(value, fromVersion, toVersion) {
+  const prefix = `${fromVersion}:`;
+  return typeof value === "string" && value.startsWith(prefix)
+    ? `${toVersion}:${value.slice(prefix.length)}`
+    : value;
+}
+
+function findTaskByPlanKey(state, planKey, matches = () => true) {
+  let archivedMatch = null;
+  for (const subject of state.subjects) {
+    for (const module of subject.modules ?? []) {
+      for (const chapter of module.chapters ?? []) {
+        for (const task of chapter.tasks ?? []) {
+          if (task.planKey !== planKey) continue;
+          if (!matches({ subject, module, chapter, task })) continue;
+          // Prefer an active task when an imported backup contains duplicates.
+          if (!task.archived) return task;
+          archivedMatch ??= task;
+        }
+      }
+    }
+  }
+  return archivedMatch;
+}
+
+function migrateLegacyBuiltinPlan(state) {
+  const legacyVersion = "bupt-mjc-2027-v1";
+  let migratedCount = 0;
+  let politicsLegacyCount = 0;
+  for (const subject of state.subjects) {
+    const isPolitics = subject.planSubjectKey === "politics"
+      || subject.name === subjectDefinitions.politics.name;
+    for (const module of subject.modules ?? []) {
+      const moduleWasLegacy = typeof module.planKey === "string"
+        && module.planKey.startsWith(`${legacyVersion}:`);
+      if (moduleWasLegacy && !isPolitics) module.planKey = rewritePlanKey(module.planKey, legacyVersion, BUILTIN_PLAN_VERSION);
+      for (const chapter of module.chapters ?? []) {
+        const chapterWasLegacy = typeof chapter.planKey === "string"
+          && chapter.planKey.startsWith(`${legacyVersion}:`);
+        if (chapterWasLegacy && !isPolitics) chapter.planKey = rewritePlanKey(chapter.planKey, legacyVersion, BUILTIN_PLAN_VERSION);
+        let chapterHasActiveUserContent = false;
+        for (const task of chapter.tasks ?? []) {
+          // A current political task may have been imported with an old
+          // generic plan key. Its explicit directory version is authoritative;
+          // preserve it so repair cannot archive the active plan by accident.
+          if ((isPolitics || task.planSubjectKey === "politics")
+            && task.politicsPlanVersion === POLITICS_PLAN_VERSION) {
+            if (!task.archived && !task.isReview) chapterHasActiveUserContent = true;
+            continue;
+          }
+          const taskWasLegacy = typeof task.planKey === "string"
+            && task.planKey.startsWith(`${legacyVersion}:`);
+          if (!taskWasLegacy) {
+            if (!task.archived && !task.isReview) chapterHasActiveUserContent = true;
+            continue;
+          }
+          if (isPolitics || task.planSubjectKey === "politics") {
+            task.archived = true;
+            task.politicsPlanVersion = POLITICS_PLAN_VERSION;
+            politicsLegacyCount += 1;
+          } else {
+            task.planKey = rewritePlanKey(task.planKey, legacyVersion, BUILTIN_PLAN_VERSION);
+            migratedCount += 1;
+          }
+        }
+        if (isPolitics && chapterWasLegacy && !chapterHasActiveUserContent) chapter.archived = true;
+      }
+      // The old political phase container must not sit beside the new
+      // five-book directory. Keep its tasks for history, but expose them
+      // only through the board's "show archived" switch.
+      if (isPolitics && moduleWasLegacy) module.archived = true;
+    }
+  }
+  return { migratedCount, politicsLegacyCount };
+}
+
+function politicsPlanIsPresent(state) {
+  const subject = state.subjects.find(item => item.planSubjectKey === "politics");
+  if (!subject) return false;
+  const expectedDays = state.planning?.startDate && state.planning?.endDate
+    ? Math.max(0, daysBetween(new Date(`${state.planning.startDate}T00:00:00`), new Date(`${state.planning.endDate}T00:00:00`)) + 1)
+    : 0;
+  // Validate each expected date, not just the set of chapters represented.
+  // This catches a deleted day even when the same chapter appears elsewhere.
+  for (let dayIndex = 0; dayIndex < expectedDays; dayIndex += 1) {
+    const day = addDays(new Date(`${state.planning.startDate}T00:00:00`), dayIndex);
+    const entry = POLITICS_OUTLINE_ENTRIES[dayIndex % POLITICS_OUTLINE_ENTRIES.length];
+    const task = findTaskByPlanKey(
+      state,
+      `${BUILTIN_PLAN_VERSION}:${dateKey(day)}:politics`,
+      context => context.subject.planSubjectKey === "politics"
+        && context.chapter.planKey === `${POLITICS_PLAN_VERSION}:${entry.outlineId}`
+    );
+    if (!task
+      || task.politicsPlanVersion !== POLITICS_PLAN_VERSION
+      || task.outlineId !== entry.outlineId) return false;
   }
 
+  return POLITICS_MODULES.every(moduleDefinition => {
+    const module = subject.modules?.find(item => item.planKey === `${POLITICS_PLAN_VERSION}:${moduleDefinition.key}`);
+    return module && POLITICS_OUTLINE_ENTRIES
+      .filter(entry => entry.moduleKey === moduleDefinition.key)
+      .every(entry => module.chapters?.some(chapter =>
+        chapter.planKey === `${POLITICS_PLAN_VERSION}:${entry.outlineId}`
+      ));
+  });
+}
+
+export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
   const examDate = new Date(`${state.settings.examDate}T00:00:00`);
   const startDate = startOfDay(now);
   const endDate = addDays(startOfDay(examDate), -1);
+  if (state.planning?.version === BUILTIN_PLAN_VERSION
+    && state.planning?.politicsPlanVersion === POLITICS_PLAN_VERSION
+    && state.planning?.endDate === dateKey(endDate)
+    && state.planning?.examDate === state.settings.examDate
+    && politicsPlanIsPresent(state)
+    && !options.repair) {
+    return { installed: false, taskCount: 0, planning: state.planning };
+  }
+
   const totalDays = Math.max(0, Math.round((endDate - startDate) / 86_400_000) + 1);
   if (!totalDays) return { installed: false, taskCount: 0, planning: null };
 
+  const migration = migrateLegacyBuiltinPlan(state);
   ensurePlanTags(state);
   const ranges = calculatePhaseRanges(totalDays);
   let createdCount = 0;
+
+  // 先把图片中的所有正式章节建立出来，即使当前剩余备考天数少于 53 天，
+  // 看板也能完整呈现目录，后续新增任务会继续挂到对应章节下。
+  const politicsDefinition = subjectDefinitions.politics;
+  const politicsSubject = ensureSubject(state, "politics", politicsDefinition);
+  for (const entry of POLITICS_OUTLINE_ENTRIES) {
+    const module = ensurePoliticsModule(politicsSubject, entry, options);
+    ensurePoliticsChapter(module, entry, options);
+  }
 
   for (let dayIndex = 0; dayIndex < totalDays; dayIndex += 1) {
     const day = addDays(startDate, dayIndex);
@@ -470,23 +795,40 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
 
     for (const block of dailyBlocks) {
       const definition = subjectDefinitions[block.subjectKey];
+      const politicsEntry = block.subjectKey === "politics"
+        ? POLITICS_OUTLINE_ENTRIES[dayIndex % POLITICS_OUTLINE_ENTRIES.length]
+        : null;
       const pool = definition.pools[phase.key];
-      const [baseGroup, baseTitle] = pool[phaseDayIndex % pool.length];
+      const [baseGroup, baseTitle] = politicsEntry
+        ? [politicsEntry.sectionName, politicsEntry.title]
+        : pool[phaseDayIndex % pool.length];
       const group = isWeeklyReview ? `${baseGroup}·周复盘` : baseGroup;
-      const title = isWeeklyReview ? `周复盘：${baseTitle}` : baseTitle;
+      const title = politicsEntry
+        ? politicsTaskTitle(politicsEntry, phase, isWeeklyReview)
+        : (isWeeklyReview ? `周复盘：${baseTitle}` : baseTitle);
       const planKey = `${BUILTIN_PLAN_VERSION}:${dateKey(day)}:${block.subjectKey}`;
-      if (state.subjects.some(subject => subject.modules?.some(module => module.chapters?.some(
-        chapter => chapter.tasks?.some(task => task.planKey === planKey)
-      )))) continue;
+      const existingTask = findTaskByPlanKey(state, planKey);
+      if (existingTask) {
+        // Only an explicit repair may restore an archived built-in task;
+        // ordinary launches must respect a user's archive choice.
+        if (existingTask.archived && options.repair) existingTask.archived = false;
+        continue;
+      }
 
       const subject = ensureSubject(state, block.subjectKey, definition);
-      const module = ensureModule(subject, phase);
-      const chapter = ensureChapter(module, block.subjectKey, phase.key, group);
+      const module = politicsEntry
+        ? ensurePoliticsModule(subject, politicsEntry, options)
+        : ensureModule(subject, phase);
+      const chapter = politicsEntry
+        ? ensurePoliticsChapter(module, politicsEntry, options)
+        : ensureChapter(module, block.subjectKey, phase.key, group);
       const scheduledAt = localDateAt(day, block.startHour, block.startMinute);
       const dueAt = new Date(scheduledAt.getTime() + 120 * 60_000);
       const task = createTask({
         title,
-        details: taskDetails(definition, phase, block, baseTitle, isWeeklyReview),
+        details: politicsEntry
+          ? politicsTaskDetails(politicsEntry, phase, block, isWeeklyReview)
+          : taskDetails(definition, phase, block, baseTitle, isWeeklyReview),
         status: "notStarted",
         priority: phase.key === "final" ? "high" : "normal",
         weight: 1,
@@ -508,9 +850,13 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
         studyNotes: "",
         resourceLinks: [],
         attachments: [],
-        outlineTopic: phase.key === "foundation" && ["334", "440"].includes(block.subjectKey)
-          ? baseTitle
-          : null
+        outlineTopic: politicsEntry
+          ? politicsEntry.title
+          : (phase.key === "foundation" && ["334", "440"].includes(block.subjectKey) ? baseTitle : null),
+        outlineId: politicsEntry?.outlineId ?? null,
+        outlineSectionKey: politicsEntry?.sectionKey ?? null,
+        outlineSectionName: politicsEntry?.sectionName ?? null,
+        politicsPlanVersion: politicsEntry ? POLITICS_PLAN_VERSION : null
       });
       chapter.tasks.push(task);
       createdCount += 1;
@@ -533,23 +879,30 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
     installedAt: new Date().toISOString(),
     startDate: dateKey(startDate),
     endDate: dateKey(endDate),
+    examDate: state.settings.examDate,
     dailyStudyMinutes: 480,
     dailyFocusMinutes: 400,
     dailyPomodoroTarget: 16,
     subjectBlockMinutes: 120,
     subjectPomodoroTarget: 4,
+    politicsPlanVersion: POLITICS_PLAN_VERSION,
+    politicsOutlineCount: POLITICS_OUTLINE_ENTRIES.length,
     phaseSchedule,
     sources: PLAN_SOURCES
   };
 
-  return { installed: true, taskCount: createdCount, planning: state.planning };
+  return {
+    installed: true,
+    taskCount: createdCount,
+    migratedCount: migration.migratedCount,
+    archivedPoliticsCount: migration.politicsLegacyCount,
+    planning: state.planning
+  };
 }
 
 export function planTasksForDate(state, day = new Date()) {
   const key = dateKey(day);
-  return state.subjects.flatMap(subject => (subject.modules ?? []).flatMap(module =>
-    (module.chapters ?? []).flatMap(chapter => (chapter.tasks ?? [])
-      .filter(task => task.planDate === key)
-      .map(task => ({ subject, module, chapter, task })))
-  )).sort((a, b) => new Date(a.task.scheduledAt) - new Date(b.task.scheduledAt));
+  return getTaskContexts(state)
+    .filter(({ task }) => !task.archived && task.planDate === key)
+    .sort((a, b) => new Date(a.task.scheduledAt) - new Date(b.task.scheduledAt));
 }
