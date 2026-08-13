@@ -150,7 +150,7 @@ export function normalizeState(candidate) {
     subjects: Array.isArray(candidate.subjects) ? candidate.subjects : defaults.subjects,
     tags: Array.isArray(candidate.tags) ? candidate.tags : [],
     pomodoroRecords: Array.isArray(candidate.pomodoroRecords)
-      ? candidate.pomodoroRecords
+      ? candidate.pomodoroRecords.filter(record => record && typeof record === "object")
       : [],
     planning: candidate.planning && typeof candidate.planning === "object"
       ? candidate.planning

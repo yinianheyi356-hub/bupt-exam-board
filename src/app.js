@@ -165,18 +165,21 @@ function ensureLifestyleContext() {
     };
     state.subjects.push(subject);
   }
+  subject.archived = false;
   let module = subject.modules?.[0];
   if (!module) {
     module = createModule("日常安排", 0);
     module.weight = 0;
     subject.modules = [module];
   }
+  module.archived = false;
   let chapter = module.chapters?.[0];
   if (!chapter) {
     chapter = createChapter("弹性日程", 0);
     chapter.weight = 0;
     module.chapters = [chapter];
   }
+  chapter.archived = false;
   return { subject, module, chapter };
 }
 
@@ -985,7 +988,10 @@ async function handleScheduleSubmit(form) {
     return;
   }
 
-  const activityType = String(data.get("activityType") ?? "study");
+  const requestedActivityType = String(data.get("activityType") ?? "study");
+  const activityType = requestedActivityType === "study" || activityTypeMap.has(requestedActivityType)
+    ? requestedActivityType
+    : "study";
   if (context) {
     Object.assign(context.task, {
       title,
