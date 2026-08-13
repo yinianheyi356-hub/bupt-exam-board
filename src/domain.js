@@ -12,6 +12,28 @@ export const TASK_PRIORITIES = [
   { value: "urgent", label: "紧急" }
 ];
 
+// 时间轴仍然复用任务实体。activityType 用来区分考研学习任务和当天的生活安排，
+// 这样旧数据无需迁移，新增的健身、运动、娱乐也能使用同一套编辑、完成和排序能力。
+export const TASK_ACTIVITY_TYPES = [
+  { value: "study", label: "学习", icon: "book-open", color: "#1f5d42" },
+  { value: "fitness", label: "健身", icon: "dumbbell", color: "#8a4b4b" },
+  { value: "sport", label: "运动", icon: "person-standing", color: "#315a7d" },
+  { value: "entertainment", label: "娱乐", icon: "music-2", color: "#8a6a32" }
+];
+
+const ACTIVITY_TYPE_VALUES = new Set(TASK_ACTIVITY_TYPES.map(item => item.value));
+
+/** 将外部/旧版本值收敛为当前支持的活动类型。 */
+export function normalizeActivityType(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ACTIVITY_TYPE_VALUES.has(normalized) ? normalized : "study";
+}
+
+/** 未标记的旧任务按学习任务处理，保证历史数据继续参与考研统计。 */
+export function isStudyTask(task) {
+  return normalizeActivityType(task?.activityType) === "study";
+}
+
 export const REVIEW_DAY_OFFSETS = [1, 2, 4, 7, 15];
 
 export function createId() {
@@ -136,6 +158,14 @@ export function normalizeState(candidate) {
     ui: { ...defaults.ui, ...(candidate.ui ?? {}) }
   };
 
+  // 产出字段是在已有版本上新增的；读取旧记录时补齐默认值。
+  state.pomodoroRecords.forEach(record => {
+    if (!record || typeof record !== "object") return;
+    record.outputText = typeof record.outputText === "string" ? record.outputText : "";
+    record.outputSubmittedAt ??= null;
+    record.interruptions = Array.isArray(record.interruptions) ? record.interruptions : [];
+  });
+
   state.subjects.forEach((subject, subjectIndex) => {
     subject.modules = Array.isArray(subject.modules) ? subject.modules : [];
     subject.sortOrder ??= subjectIndex;
@@ -146,6 +176,7 @@ export function normalizeState(candidate) {
         chapter.tasks = Array.isArray(chapter.tasks) ? chapter.tasks : [];
         chapter.sortOrder ??= chapterIndex;
         chapter.tasks.forEach((task, taskIndex) => {
+          task.activityType = normalizeActivityType(task.activityType);
           task.sortOrder ??= taskIndex;
           task.dailySortOrder ??= taskIndex;
           task.tags = Array.isArray(task.tags) ? task.tags : [];
@@ -201,7 +232,7 @@ export function findTaskContext(state, taskId) {
 export function hierarchyProgress(subjectOrModuleOrChapter) {
   const calculate = node => {
     if (Array.isArray(node.tasks)) {
-      const tasks = node.tasks.filter(task => !task.isReview);
+      const tasks = node.tasks.filter(task => !task.isReview && isStudyTask(task));
       if (!tasks.length) return { value: 0, completed: 0, total: 0 };
       const totalWeight = tasks.reduce((sum, task) => sum + Math.max(Number(task.weight) || 0, 0), 0);
       const completedWeight = tasks
@@ -252,6 +283,7 @@ export function createTask(values = {}, sortOrder = 0) {
     details: values.details ?? "",
     status: values.status ?? "notStarted",
     priority: values.priority ?? "normal",
+    activityType: normalizeActivityType(values.activityType),
     weight: Number(values.weight) || 1,
     sortOrder,
     dailySortOrder: sortOrder,
@@ -285,7 +317,7 @@ export function createTask(values = {}, sortOrder = 0) {
 
 export function generateReviewTasks(state, sourceContext, completedAt = new Date()) {
   const { task, chapter } = sourceContext;
-  if (!state.settings.automaticReview || !task.automaticReview || task.isReview) return 0;
+  if (!state.settings.automaticReview || !task.automaticReview || task.isReview || !isStudyTask(task)) return 0;
   const existingStages = new Set(
     getTaskContexts(state, { includeArchived: true })
       .filter(item => item.task.isReview && item.task.sourceTaskId === task.id)
@@ -345,7 +377,7 @@ export function runAutomaticDeferral(state, now = new Date()) {
   const today = startOfDay(now);
   let changed = 0;
   for (const { task } of getTaskContexts(state)) {
-    if (task.planKey || task.isReview || ["completed", "needsReview"].includes(task.status)) continue;
+    if (!isStudyTask(task) || task.planKey || task.isReview || ["completed", "needsReview"].includes(task.status)) continue;
     const dates = [task.scheduledAt, task.dueAt].filter(Boolean).map(value => new Date(value));
     if (!dates.length) continue;
     const earliest = new Date(Math.min(...dates));
@@ -432,7 +464,9 @@ export function startFocusRecord(state, type, taskId = null, now = new Date()) {
     taskTitle: context?.task.title ?? "",
     subjectId: context?.subject.id ?? null,
     subjectName: context?.subject.name ?? "自由专注",
-    interruptions: []
+    interruptions: [],
+    outputText: "",
+    outputSubmittedAt: null
   };
   state.pomodoroRecords.push(record);
   return record;
@@ -479,6 +513,22 @@ export function finishFocusRecord(state, record, finalState = "completed", now =
       context.task.updatedAt = now.toISOString();
     }
   }
+  return true;
+}
+
+/**
+ * 保存一个已经结束的专注记录的学习产出。
+ * 产出属于番茄记录而不是任务，便于同一任务的每个番茄分别复盘。
+ */
+export function submitFocusOutput(state, recordId, text, now = new Date()) {
+  const record = state.pomodoroRecords.find(item => item.id === recordId);
+  if (!record || record.type !== "focus" || !["completed", "endedEarly"].includes(record.state)) {
+    return false;
+  }
+  const output = String(text ?? "").trim();
+  if (!output) return false;
+  record.outputText = output;
+  record.outputSubmittedAt = now.toISOString();
   return true;
 }
 
@@ -539,7 +589,7 @@ export function statisticsForRange(state, range, now = new Date()) {
     item.seconds += record.focusedSeconds;
     subjectMap.set(key, item);
   });
-  const tasks = getTaskContexts(state).filter(({ task }) => !task.isReview);
+  const tasks = getTaskContexts(state).filter(({ task }) => !task.isReview && isStudyTask(task));
   const relevantTasks = tasks.filter(({ task }) => {
     const date = new Date(task.dueAt ?? task.scheduledAt ?? task.createdAt);
     return date >= start && date < end;

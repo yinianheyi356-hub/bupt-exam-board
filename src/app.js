@@ -23,11 +23,12 @@ import {
   pauseFocusRecord,
   resumeFocusRecord,
   runAutomaticDeferral,
+  submitFocusOutput,
   startFocusRecord,
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.1.4";
+} from "./domain.js?v=1.2.0";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -39,15 +40,15 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.1.4";
+} from "./storage.js?v=1.2.0";
 import {
   BUILTIN_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.1.4";
+} from "./study-plan.js?v=1.2.0";
 
-const APP_VERSION = "1.1.4";
+const APP_VERSION = "1.2.0";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -67,6 +68,14 @@ const sessionTypes = [
   { value: "longBreak", label: "长休息" }
 ];
 
+const activityTypes = [
+  { value: "fitness", label: "健身", icon: "dumbbell" },
+  { value: "sport", label: "运动", icon: "person-standing" },
+  { value: "entertainment", label: "娱乐", icon: "music-2" }
+];
+
+const activityTypeMap = new Map(activityTypes.map(item => [item.value, item]));
+
 const chartColors = ["#1f5d42", "#315a7d", "#8a6a32", "#8a4b4b", "#5d6570", "#2f766d"];
 
 let state = createDefaultState();
@@ -85,6 +94,7 @@ const runtime = {
   statisticsRange: "week",
   showArchived: false,
   modal: null,
+  pendingFocusCompletion: null,
   currentDateKey: dateKey(),
   boardPhase: "foundation"
 };
@@ -128,6 +138,54 @@ function priorityLabel(priority) {
 
 function sessionLabel(type) {
   return sessionTypes.find(item => item.value === type)?.label ?? "专注";
+}
+
+function activityInfo(type) {
+  return activityTypeMap.get(type) ?? { value: "study", label: "学习", icon: "book-open" };
+}
+
+function activityLabel(type) {
+  return activityInfo(type).label;
+}
+
+function ensureLifestyleContext() {
+  let subject = state.subjects.find(item => item.isLifestyle);
+  if (!subject) {
+    subject = {
+      id: "lifestyle-subject",
+      name: "生活安排",
+      notes: "",
+      color: "#5d6570",
+      weight: 0,
+      targetStudyMinutes: 0,
+      sortOrder: 99,
+      archived: false,
+      isLifestyle: true,
+      modules: []
+    };
+    state.subjects.push(subject);
+  }
+  let module = subject.modules?.[0];
+  if (!module) {
+    module = createModule("日常安排", 0);
+    module.weight = 0;
+    subject.modules = [module];
+  }
+  let chapter = module.chapters?.[0];
+  if (!chapter) {
+    chapter = createChapter("弹性日程", 0);
+    chapter.weight = 0;
+    module.chapters = [chapter];
+  }
+  return { subject, module, chapter };
+}
+
+function scheduleDurationMinutes(task) {
+  if (task?.scheduledAt && task?.dueAt) {
+    const duration = Math.round((new Date(task.dueAt) - new Date(task.scheduledAt)) / 60_000);
+    if (Number.isFinite(duration) && duration > 0) return duration;
+  }
+  return Math.max(Number(task?.estimatedMinutes) || 60, 15);
 }
 
 function taskPomodoroCount(taskId) {
@@ -258,10 +316,14 @@ function renderCountdown() {
 
 function renderTaskContextRow(context, style = "todo") {
   const { task, subject, chapter } = context;
+  const activity = activityInfo(task.activityType);
   const dueText = task.dueAt ? formatTime(task.dueAt) : "";
   const completedPomodoros = taskPomodoroCount(task.id);
   const pomodoroText = task.planKey ? ` · ${completedPomodoros}/${task.pomodoroTarget ?? 4} 番茄` : "";
   const dateText = style === "backlog" && task.planDate ? ` · ${formatDate(task.planDate)}` : "";
+  const contextText = task.activityType && task.activityType !== "study"
+    ? `<span class="activity-badge activity-${escapeHTML(task.activityType)}">${icon(activity.icon, 13)}${escapeHTML(activity.label)}</span>`
+    : `${escapeHTML(subject.name)} · ${escapeHTML(chapter.name)}`;
   return `
     <article class="task-row" draggable="${style === "todo"}" data-task-id="${task.id}">
       ${style === "todo" ? `<button type="button" class="drag-handle" title="拖动排序" aria-label="拖动 ${escapeHTML(task.title)} 调整顺序">${icon("grip-vertical", 18)}</button>` : ""}
@@ -271,12 +333,13 @@ function renderTaskContextRow(context, style = "todo") {
           <strong>${escapeHTML(task.title || "未命名任务")}</strong>
           <span class="priority priority-${task.priority}">${priorityLabel(task.priority)}</span>
         </div>
-        <p>${escapeHTML(subject.name)} · ${escapeHTML(chapter.name)}${dueText && !["timeline", "backlog"].includes(style) ? ` · ${dueText}` : ""}${dateText}${pomodoroText}</p>
+        <p>${contextText}${dueText && !["timeline", "backlog"].includes(style) ? ` · ${dueText}` : ""}${dateText}${pomodoroText}</p>
       </div>
       <div class="row-actions">
         <button class="icon-button" data-action="open-materials" data-task-id="${task.id}" title="资料与笔记" aria-label="打开 ${escapeHTML(task.title)} 的资料与笔记">
           ${icon("paperclip", 17)}
         </button>
+        ${style === "timeline" ? `<button class="icon-button" data-action="edit-schedule" data-task-id="${task.id}" title="调整时间" aria-label="调整 ${escapeHTML(task.title)} 的时间">${icon("clock-3", 17)}</button>` : ""}
         <button class="icon-button success" data-action="complete-task" data-task-id="${task.id}" title="完成" aria-label="完成 ${escapeHTML(task.title)}">
           ${icon("check", 18)}
         </button>
@@ -290,18 +353,10 @@ function renderTaskContextRow(context, style = "todo") {
 
 function renderTodayPage() {
   const now = new Date();
-  const key = dateKey(now);
-  const note = state.dailyNotes[key] ?? { goal: "", content: "", reflection: "" };
   const sections = todaySections(state, now);
   const plannedTasks = planTasksForDate(state, now);
   const completedPlannedTasks = plannedTasks.filter(({ task }) => task.status === "completed").length;
   const completedPomodoros = plannedTasks.reduce((sum, { task }) => sum + Math.min(taskPomodoroCount(task.id), task.pomodoroTarget ?? 4), 0);
-  const todayFocusSeconds = state.pomodoroRecords
-    .filter(record => record.type === "focus"
-      && ["completed", "endedEarly"].includes(record.state)
-      && dateKey(new Date(record.endedAt ?? record.startedAt)) === key)
-    .reduce((sum, record) => sum + record.focusedSeconds, 0);
-  const targetSeconds = Math.max(state.settings.dailyGoalMinutes, 1) * 60;
 
   return `
     <div class="page today-page">
@@ -319,17 +374,8 @@ function renderTodayPage() {
         </div>
       </section>
 
-      <section class="section-block goal-section">
-        <div class="section-heading">
-          <div><span class="section-icon">${icon("target", 19)}</span><h2>今日目标</h2></div>
-          <span>${durationText(todayFocusSeconds)} / ${state.settings.dailyGoalMinutes} 分钟有效专注</span>
-        </div>
-        <textarea id="daily-goal" class="goal-input" rows="2" maxlength="180" placeholder="写下今天最重要的学习目标">${escapeHTML(note.goal)}</textarea>
-        ${progressBar(todayFocusSeconds / targetSeconds, "今日学习目标")}
-      </section>
-
       <section class="section-block">
-        <div class="section-heading"><div><span class="section-icon">${icon("clock-3", 19)}</span><h2>时间轴</h2></div><span>${sections.timeline.length} 项</span></div>
+        <div class="section-heading"><div><span class="section-icon">${icon("clock-3", 19)}</span><h2>时间轴</h2></div><div class="section-heading-actions"><span>${sections.timeline.length} 项</span><button class="secondary-command compact" data-action="add-schedule" title="新增日程" aria-label="新增日程">${icon("plus", 16)}<span>新增日程</span></button></div></div>
         <div class="task-list">
           ${sections.timeline.length ? sections.timeline.map(item => renderTaskContextRow(item, "timeline")).join("") : emptyState("calendar", "今天没有已安排的日程")}
         </div>
@@ -458,7 +504,7 @@ function renderSubject(subject) {
         </div>
         <div class="subject-controls">
           <div class="subject-progress">${progressBar(progress.value, subject.name)}</div>
-          <button class="icon-button" data-action="add-module" data-subject-id="${subject.id}" title="新增模块" aria-label="在 ${escapeHTML(subject.name)} 新增模块">${icon("folder-plus", 17)}</button>
+          <button class="icon-button" data-action="add-module" data-subject-id="${subject.id}" title="新增模块" aria-label="在 ${escapeHTML(subject.name)} 新增模块">${icon("plus", 17)}</button>
           <button class="icon-button" data-action="edit-subject" data-subject-id="${subject.id}" title="编辑科目" aria-label="编辑 ${escapeHTML(subject.name)}">${icon("pencil", 17)}</button>
           <button class="icon-button danger" data-action="delete-subject" data-subject-id="${subject.id}" title="删除科目" aria-label="删除 ${escapeHTML(subject.name)}">${icon("trash-2", 17)}</button>
         </div>
@@ -473,9 +519,9 @@ function renderSubject(subject) {
 
 function renderBoardPage() {
   const visibleSubjects = state.subjects
-    .filter(subject => runtime.showArchived || !subject.archived)
+    .filter(subject => !subject.isLifestyle && (runtime.showArchived || !subject.archived))
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-  const overall = hierarchyProgress({ modules: state.subjects });
+  const overall = hierarchyProgress({ modules: state.subjects.filter(subject => !subject.isLifestyle) });
   const currentPhase = state.planning?.phaseSchedule?.find(phase => (
     dateKey() >= phase.startDate && dateKey() <= phase.endDate
   ));
@@ -520,7 +566,8 @@ function renderFocusPage() {
   const remaining = snapshot?.remainingSeconds ?? durations[type];
   const progress = snapshot?.progress ?? 0;
   const availableTasks = getTaskContexts(state)
-    .filter(({ task }) => task.status !== "completed" && (!task.planDate || task.planDate <= today))
+    .filter(({ task }) => (task.activityType ?? "study") === "study"
+      && task.status !== "completed" && (!task.planDate || task.planDate <= today))
     .sort((a, b) => {
       const dateComparison = String(b.task.planDate ?? today).localeCompare(String(a.task.planDate ?? today));
       return dateComparison || new Date(a.task.scheduledAt ?? a.task.dueAt ?? 0) - new Date(b.task.scheduledAt ?? b.task.dueAt ?? 0);
@@ -674,7 +721,6 @@ function renderSettingsPage() {
             ${textField("targetMajor", "目标专业", state.settings.targetMajor, true)}
             ${dateField("preparationStartDate", "备考开始", state.settings.preparationStartDate)}
             ${dateField("examDate", "考试日期", state.settings.examDate)}
-            ${numberField("dailyGoalMinutes", "每日有效专注（分钟）", state.settings.dailyGoalMinutes, 30, 1440, 30)}
           </div>
         </section>
         <section class="form-section">
@@ -826,6 +872,44 @@ function taskFormFields(task = null) {
     ${state.tags.length ? `<fieldset class="tag-picker"><legend>标签</legend>${state.tags.map(tag => `<label><input type="checkbox" name="tags" value="${tag.id}" ${task?.tags?.includes(tag.id) ? "checked" : ""}><span style="--tag-color:${escapeHTML(tag.color)}">${escapeHTML(tag.name)}</span></label>`).join("")}</fieldset>` : ""}`;
 }
 
+function scheduleDateTimeDefault() {
+  const value = new Date();
+  value.setSeconds(0, 0);
+  value.setMinutes(Math.floor(value.getMinutes() / 30) * 30);
+  return localDateTimeValue(value);
+}
+
+function scheduleTypeField(task) {
+  if (task && (task.activityType ?? "study") === "study") {
+    return `<input type="hidden" name="activityType" value="study"><div class="schedule-type-readonly"><span>日程类型</span><strong>${icon("book-open", 16)}学习任务</strong></div>`;
+  }
+  const selected = task?.activityType && activityTypeMap.has(task.activityType) ? task.activityType : "fitness";
+  return `<label class="field"><span>日程类型</span><select name="activityType">${activityTypes.map(item => `<option value="${item.value}" ${item.value === selected ? "selected" : ""}>${item.label}</option>`).join("")}</select></label>`;
+}
+
+function openScheduleEditor(taskId = null) {
+  const context = taskId ? findTaskContext(state, taskId) : null;
+  if (taskId && !context) return;
+  const task = context?.task ?? null;
+  const existingActivity = task && (task.activityType ?? "study") !== "study";
+  const title = task ? "调整日程" : "新增日程";
+  const deleteButton = existingActivity
+    ? `<button type="button" class="text-danger-button" data-action="delete-schedule" data-task-id="${task.id}">删除这条日程</button>`
+    : "";
+  openModal(`
+    <form id="schedule-form" data-task-id="${escapeHTML(task?.id ?? "")}" class="modal-form">
+      ${textField("title", "日程名称", task?.title ?? "", true)}
+      ${scheduleTypeField(task)}
+      <div class="form-grid two-columns">
+        <label class="field"><span>开始时间</span><input name="scheduledAt" type="datetime-local" value="${localDateTimeValue(task?.scheduledAt) || scheduleDateTimeDefault()}" required></label>
+        ${numberField("durationMinutes", "学习/活动时长（分钟）", scheduleDurationMinutes(task), 15, 720, 15)}
+      </div>
+      <label class="field"><span>备注</span><textarea name="details" rows="3" maxlength="800" placeholder="可记录地点、学习物料或当天调整原因">${escapeHTML(task?.details ?? "")}</textarea></label>
+      <p class="form-hint">修改开始时间后，截止时间会按时长自动重算。内置计划只允许调整当天时段。</p>
+      <div class="modal-actions"><span>${deleteButton}</span><span class="modal-actions-right"><button type="button" class="secondary-command" data-action="close-modal">取消</button><button type="submit" class="primary-command">${icon("check", 17)}<span>保存日程</span></button></span></div>
+    </form>`, { title, kind: "schedule" });
+}
+
 function openEntityEditor(type, dataset) {
   const context = {
     subjectId: dataset.subjectId ?? "",
@@ -872,6 +956,78 @@ function safeExternalUrl(value) {
   } catch {
     return "";
   }
+}
+
+async function handleScheduleSubmit(form) {
+  const data = new FormData(form);
+  const title = String(data.get("title") ?? "").trim();
+  const rawStart = String(data.get("scheduledAt") ?? "");
+  const start = new Date(rawStart);
+  const durationMinutes = Math.round(formNumber(data, "durationMinutes", 60));
+  if (!title || Number.isNaN(start.getTime())) {
+    showToast("请填写日程名称和有效开始时间", "error");
+    return;
+  }
+  if (durationMinutes < 15 || durationMinutes > 720) {
+    showToast("日程时长应在 15 到 720 分钟之间", "error");
+    return;
+  }
+  const due = new Date(start.getTime() + durationMinutes * 60_000);
+  const taskId = form.dataset.taskId;
+  const context = taskId ? findTaskContext(state, taskId) : null;
+  if (taskId && !context) {
+    showToast("日程不存在，可能已被删除", "error");
+    closeModal();
+    return;
+  }
+  if (context?.task.planKey && dateKey(start) !== context.task.planDate) {
+    showToast("内置计划只能调整当天时间，不能改日期", "error");
+    return;
+  }
+
+  const activityType = String(data.get("activityType") ?? "study");
+  if (context) {
+    Object.assign(context.task, {
+      title,
+      details: String(data.get("details") ?? "").trim(),
+      activityType,
+      scheduledAt: start.toISOString(),
+      dueAt: due.toISOString(),
+      estimatedMinutes: durationMinutes,
+      updatedAt: new Date().toISOString()
+    });
+  } else {
+    const lifestyle = ensureLifestyleContext();
+    const task = createTask({
+      title,
+      details: String(data.get("details") ?? "").trim(),
+      activityType,
+      status: "notStarted",
+      priority: "normal",
+      estimatedMinutes: durationMinutes,
+      scheduledAt: start.toISOString(),
+      dueAt: due.toISOString(),
+      automaticReview: false
+    }, lifestyle.chapter.tasks.length);
+    lifestyle.chapter.tasks.push(task);
+  }
+  await saveNow();
+  closeModal();
+  renderShell();
+  showToast(context ? "日程时间已更新" : "日程已添加");
+}
+
+async function deleteSchedule(taskId) {
+  const context = findTaskContext(state, taskId);
+  if (!context || (context.task.activityType ?? "study") === "study") return;
+  if (!confirm(`确定删除“${context.task.title || "这条日程"}”吗？`)) return;
+  const attachmentIds = (context.task.attachments ?? []).map(file => file.id);
+  if (attachmentIds.length) await deleteTaskAttachments(attachmentIds);
+  context.chapter.tasks = context.chapter.tasks.filter(task => task.id !== taskId);
+  await saveNow();
+  closeModal();
+  renderShell();
+  showToast("日程已删除");
 }
 
 function openMaterials(taskId, draft = {}) {
@@ -1168,21 +1324,8 @@ async function notifyFocusCompleted(record) {
   }
 }
 
-async function finishActiveRecord(finalState) {
-  const record = activeFocusRecord(state);
-  if (!record) return;
-  finishFocusRecord(state, record, finalState);
-  let completedPlanBlock = false;
-  if (finalState === "completed" && record.type === "focus" && record.taskId) {
-    const context = findTaskContext(state, record.taskId);
-    if (context?.task.planKey
-      && context.task.status !== "completed"
-      && taskPomodoroCount(record.taskId) >= (context.task.pomodoroTarget ?? 4)) {
-      completeTask(state, record.taskId);
-      completedPlanBlock = true;
-    }
-  }
-  await saveNow();
+async function continueAfterFocusFinish(record, finalState, completedPlanBlock = false) {
+  runtime.pendingFocusCompletion = null;
   closeModal();
   if (finalState === "completed") {
     await notifyFocusCompleted(record);
@@ -1205,6 +1348,58 @@ async function finishActiveRecord(finalState) {
     showToast("本次计时已取消");
   }
   renderShell();
+}
+
+function openFocusOutputDialog(record, finalState, completedPlanBlock) {
+  runtime.pendingFocusCompletion = { recordId: record.id, finalState, completedPlanBlock };
+  openModal(`
+    <form id="focus-output-form" data-record-id="${escapeHTML(record.id)}" class="modal-form">
+      <div class="output-summary">
+        <span class="section-icon">${icon("check-check", 20)}</span>
+        <div><strong>${finalState === "completed" ? "本次专注已完成" : "本次专注已结束"}</strong><p>${record.taskTitle ? `关联任务：${escapeHTML(record.taskTitle)}` : "记录一条产出，方便晚间复盘。"}</p></div>
+      </div>
+      <label class="field"><span>本次产出</span><textarea name="outputText" rows="6" maxlength="2000" placeholder="写下完成的知识点、笔记、题目或下一步动作" required>${escapeHTML(record.outputText ?? "")}</textarea></label>
+      <p class="form-hint">可以先跳过，之后在数据备份中查看专注记录。</p>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="skip-focus-output">稍后补充</button><button type="submit" class="primary-command">${icon("save", 17)}<span>保存产出并继续</span></button></div>
+    </form>`, { title: "提交本次产出", kind: "focus-output" });
+}
+
+async function skipFocusOutput() {
+  const pending = runtime.pendingFocusCompletion;
+  if (!pending) {
+    closeModal();
+    return;
+  }
+  const record = state.pomodoroRecords.find(item => item.id === pending.recordId);
+  if (!record) {
+    runtime.pendingFocusCompletion = null;
+    closeModal();
+    return;
+  }
+  await continueAfterFocusFinish(record, pending.finalState, pending.completedPlanBlock);
+}
+
+async function finishActiveRecord(finalState) {
+  const record = activeFocusRecord(state);
+  if (!record) return;
+  if (!finishFocusRecord(state, record, finalState)) return;
+  let completedPlanBlock = false;
+  if (finalState === "completed" && record.type === "focus" && record.taskId) {
+    const context = findTaskContext(state, record.taskId);
+    if (context?.task.planKey
+      && context.task.status !== "completed"
+      && taskPomodoroCount(record.taskId) >= (context.task.pomodoroTarget ?? 4)) {
+      completeTask(state, record.taskId);
+      completedPlanBlock = true;
+    }
+  }
+  await saveNow();
+  if (record.type === "focus" && ["completed", "endedEarly"].includes(finalState)) {
+    renderShell();
+    openFocusOutputDialog(record, finalState, completedPlanBlock);
+    return;
+  }
+  await continueAfterFocusFinish(record, finalState, completedPlanBlock);
 }
 
 async function refreshCurrentDay() {
@@ -1246,6 +1441,7 @@ function startFocusTicker() {
 
 async function handleClick(event) {
   if (event.target.classList?.contains("modal-backdrop")) {
+    if (runtime.modal === "focus-output") return skipFocusOutput();
     closeModal();
     return;
   }
@@ -1262,7 +1458,8 @@ async function handleClick(event) {
   if (!button) return;
   const { action } = button.dataset;
 
-  if (action === "close-modal") return closeModal();
+  if (action === "close-modal") return runtime.modal === "focus-output" ? skipFocusOutput() : closeModal();
+  if (action === "skip-focus-output") return skipFocusOutput();
   if (action === "open-install") return openInstallDialog();
   if (action === "quick-focus") {
     runtime.tab = "focus";
@@ -1283,6 +1480,9 @@ async function handleClick(event) {
   if (action === "move-task-up") return reorderTodayTask(button.dataset.taskId, -1);
   if (action === "move-task-down") return reorderTodayTask(button.dataset.taskId, 1);
   if (action === "open-materials") return openMaterials(button.dataset.taskId);
+  if (action === "add-schedule") return openScheduleEditor();
+  if (action === "edit-schedule") return openScheduleEditor(button.dataset.taskId);
+  if (action === "delete-schedule") return deleteSchedule(button.dataset.taskId);
   if (action === "open-attachment") return openStoredAttachment(button.dataset.attachmentId);
   if (action === "delete-attachment") {
     if (!confirm("确定删除这个附件吗？")) return;
@@ -1381,6 +1581,21 @@ async function handleSubmit(event) {
   event.preventDefault();
   const form = event.target;
   if (form.id === "entity-form") return handleEntitySubmit(form);
+  if (form.id === "schedule-form") return handleScheduleSubmit(form);
+  if (form.id === "focus-output-form") {
+    const pending = runtime.pendingFocusCompletion;
+    const recordId = form.dataset.recordId;
+    const output = new FormData(form).get("outputText");
+    if (!submitFocusOutput(state, recordId, output)) {
+      showToast("请填写本次产出，或选择稍后补充", "error");
+      form.elements.outputText?.focus();
+      return;
+    }
+    const record = state.pomodoroRecords.find(item => item.id === recordId);
+    await saveNow();
+    if (record && pending) await continueAfterFocusFinish(record, pending.finalState, pending.completedPlanBlock);
+    return;
+  }
   if (form.id === "materials-form") {
     const context = findTaskContext(state, form.dataset.taskId);
     if (!context) return;
@@ -1454,7 +1669,6 @@ async function handleSubmit(event) {
       targetMajor: String(data.get("targetMajor") ?? "").trim(),
       preparationStartDate: data.get("preparationStartDate"),
       examDate: data.get("examDate"),
-      dailyGoalMinutes: formNumber(data, "dailyGoalMinutes", 400),
       automaticReview: formBoolean(data, "automaticReview"),
       automaticDeferral: formBoolean(data, "automaticDeferral"),
       notificationsEnabled: formBoolean(data, "notificationsEnabled"),
@@ -1477,13 +1691,6 @@ async function handleSubmit(event) {
 }
 
 function handleInput(event) {
-  if (event.target.id === "daily-goal") {
-    const key = dateKey();
-    state.dailyNotes[key] ??= { goal: "", content: "", reflection: "" };
-    state.dailyNotes[key].goal = event.target.value;
-    state.dailyNotes[key].updatedAt = new Date().toISOString();
-    scheduleSave();
-  }
 }
 
 async function handleChange(event) {
@@ -1690,7 +1897,10 @@ async function initialize() {
   modalRoot.addEventListener("submit", handleSubmit);
   modalRoot.addEventListener("change", handleChange);
   document.addEventListener("keydown", event => {
-    if (event.key === "Escape" && runtime.modal) closeModal();
+    if (event.key === "Escape" && runtime.modal) {
+      if (runtime.modal === "focus-output") skipFocusOutput();
+      else closeModal();
+    }
   });
   window.addEventListener("online", renderShell);
   window.addEventListener("offline", renderShell);

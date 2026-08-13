@@ -5,7 +5,7 @@ import {
   createTask,
   dateKey,
   startOfDay
-} from "./domain.js?v=1.1.4";
+} from "./domain.js?v=1.2.0";
 
 export const BUILTIN_PLAN_VERSION = "bupt-mjc-2027-v1";
 

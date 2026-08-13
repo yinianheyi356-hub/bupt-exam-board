@@ -270,10 +270,17 @@ svg {
   height: 36px;
   flex: 0 0 36px;
   place-items: center;
+  padding: 0;
+  line-height: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--text-secondary);
   background: var(--surface);
+}
+
+.icon-button svg {
+  display: block;
+  margin: auto;
 }
 
 .icon-button:hover {
@@ -575,6 +582,82 @@ textarea::placeholder {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   font-weight: 650;
+}
+
+.section-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.secondary-command.compact {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.activity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
+.activity-fitness { color: var(--red); }
+.activity-sport { color: var(--blue); }
+.activity-entertainment { color: var(--amber); }
+
+.schedule-type-readonly {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.schedule-type-readonly strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--green);
+  background: var(--surface-secondary);
+}
+
+.form-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.modal-actions-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.output-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-secondary);
+}
+
+.output-summary strong,
+.output-summary p {
+  margin: 0;
+}
+
+.output-summary p {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .task-main {
