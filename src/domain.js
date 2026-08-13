@@ -225,8 +225,21 @@ export function findContext(state, identifiers = {}) {
 }
 
 export function findTaskContext(state, taskId) {
-  return getTaskContexts(state, { includeArchived: true })
-    .find(context => context.task.id === taskId) ?? null;
+  const matches = getTaskContexts(state, { includeArchived: true })
+    .filter(context => context.task.id === taskId);
+  if (!matches.length) return null;
+
+  // Backups from the first political-plan version can contain a historical
+  // task with the same deterministic ID as the newly generated task. Actions
+  // from the visible board must resolve to the active, visible context first.
+  return matches.find(context => (
+    !context.subject.archived
+    && !context.module.archived
+    && !context.chapter.archived
+    && !context.task.archived
+  ))
+    ?? matches.find(context => !context.task.archived)
+    ?? matches[0];
 }
 
 export function hierarchyProgress(subjectOrModuleOrChapter) {
