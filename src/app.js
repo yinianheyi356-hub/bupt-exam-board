@@ -144,10 +144,6 @@ function activityInfo(type) {
   return activityTypeMap.get(type) ?? { value: "study", label: "学习", icon: "book-open" };
 }
 
-function activityLabel(type) {
-  return activityInfo(type).label;
-}
-
 function ensureLifestyleContext() {
   let subject = state.subjects.find(item => item.isLifestyle);
   if (!subject) {
@@ -1696,9 +1692,6 @@ async function handleSubmit(event) {
   }
 }
 
-function handleInput(event) {
-}
-
 async function handleChange(event) {
   if (event.target.id === "show-archived") {
     runtime.showArchived = event.target.checked;
@@ -1889,7 +1882,6 @@ async function initialize() {
 
   appElement.addEventListener("click", handleClick);
   appElement.addEventListener("submit", handleSubmit);
-  appElement.addEventListener("input", handleInput);
   appElement.addEventListener("change", handleChange);
   appElement.addEventListener("dragstart", handleDragStart);
   appElement.addEventListener("dragover", handleDragOver);
