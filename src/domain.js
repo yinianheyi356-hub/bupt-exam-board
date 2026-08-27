@@ -35,6 +35,7 @@ export function isStudyTask(task) {
 }
 
 export const REVIEW_DAY_OFFSETS = [1, 2, 4, 7, 15];
+export const ENGLISH_CYCLE_PHASES = ["doing", "consolidating"];
 
 export function createId() {
   return globalThis.crypto?.randomUUID?.()
@@ -75,6 +76,70 @@ export function daysBetween(from, to) {
   return Math.round((startOfDay(to) - startOfDay(from)) / 86_400_000);
 }
 
+/** 两天一套英语真题：第一天做题，第二天巩固，第三天进入下一套。 */
+export function englishCycleForDate(state, day = new Date()) {
+  const cycle = state.englishCycle ?? {};
+  const configuredStart = new Date(`${cycle.startDate || dateKey(day)}T00:00:00`);
+  const start = Number.isNaN(configuredStart.getTime()) ? startOfDay(day) : startOfDay(configuredStart);
+  const target = startOfDay(day);
+  const dayIndex = Math.max(0, daysBetween(start, target));
+  const cycleIndex = Math.floor(dayIndex / 2);
+  const phase = dayIndex % 2 === 0 ? "doing" : "consolidating";
+  const cycleKey = `${cycle.examType || "英语二"}:${cycle.currentYear || "第" + (cycleIndex + 1) + "套"}:${cycleIndex}`;
+  const skipped = (cycle.skippedCycles ?? []).some(item => item.cycleKey === cycleKey);
+  const status = skipped
+    ? "skipped"
+    : cycle.status === "deferred" && cycle.currentDateKey === dateKey(day)
+      ? "deferred"
+      : cycle.status === "completed" && cycle.currentDateKey === dateKey(day)
+        ? "completed"
+        : "pending";
+  return {
+    cycleIndex,
+    cycleKey,
+    dayIndex,
+    phase,
+    phaseLabel: phase === "doing" ? "做题日" : "巩固日",
+    examType: cycle.examType || "英语二",
+    year: cycle.currentYear || `第 ${cycleIndex + 1} 套`,
+    section: cycle.currentSection || "Text 1",
+    status,
+    date: dateKey(target),
+    nextDate: dateKey(addDays(target, 1)),
+    nextPhase: phase === "doing" ? "巩固前一天真题" : "开始下一套真题"
+  };
+}
+
+export function updateEnglishCycle(state, action, values = {}, now = new Date()) {
+  state.englishCycle ??= createDefaultState(now).englishCycle;
+  const current = englishCycleForDate(state, now);
+  const cycle = state.englishCycle;
+  cycle.currentDateKey = current.date;
+  cycle.lastActionAt = now.toISOString();
+  if (values.year !== undefined) cycle.currentYear = String(values.year).trim();
+  if (values.examType === "英语一" || values.examType === "英语二") cycle.examType = values.examType;
+  if (values.section) cycle.currentSection = String(values.section).trim();
+  if (action === "defer") {
+    cycle.status = "deferred";
+    cycle.deferredCount = Math.max(0, Number(cycle.deferredCount) || 0) + 1;
+  } else if (action === "makeup") {
+    cycle.status = "completed";
+    cycle.makeupDates = [...(cycle.makeupDates ?? []), current.date];
+  } else if (action === "skip") {
+    cycle.status = "completed";
+    cycle.skippedCycles = [...(cycle.skippedCycles ?? []), { cycleKey: current.cycleKey, skippedAt: now.toISOString() }]
+      .filter((item, index, list) => list.findIndex(candidate => candidate.cycleKey === item.cycleKey) === index);
+  } else if (action === "restart") {
+    cycle.status = "pending";
+    cycle.restartCount = Math.max(0, Number(cycle.restartCount) || 0) + 1;
+  } else if (action === "reset") {
+    cycle.startDate = values.startDate || cycle.startDate;
+    cycle.status = "pending";
+    cycle.currentDateKey = null;
+  }
+  return englishCycleForDate(state, now);
+}
+
 function nextExamDate(now = new Date()) {
   let result = new Date(now.getFullYear(), 11, 20);
   if (result < startOfDay(now)) result = new Date(now.getFullYear() + 1, 11, 20);
@@ -97,7 +162,7 @@ function seedSubject(name, color, sortOrder) {
 
 export function createDefaultState(now = new Date()) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     settings: {
       examName: "北京邮电大学新闻与传播考研",
       targetSchool: "北京邮电大学",
@@ -129,9 +194,29 @@ export function createDefaultState(now = new Date()) {
     ],
     tags: [],
     pomodoroRecords: [],
+    // 英语词库与复习历史独立于四层任务树，便于大批量懒加载并保持旧备份兼容。
+    vocabulary: {
+      items: [],
+      sources: [],
+      reviewRecords: [],
+      importBatches: [],
+      session: null
+    },
+    englishCycle: {
+      startDate: dateKey(now),
+      examType: "英语二",
+      currentYear: "",
+      currentSection: "Text 1",
+      phase: "doing",
+      status: "pending",
+      offsetDays: 0,
+      skippedCycles: [],
+      lastActionAt: null
+    },
     ui: {
       selectedTab: "today",
-      boardExpanded: {}
+      boardExpanded: {},
+      chapterExpanded: {}
     }
   };
 }
@@ -155,7 +240,16 @@ export function normalizeState(candidate) {
     planning: candidate.planning && typeof candidate.planning === "object"
       ? candidate.planning
       : null,
-    ui: { ...defaults.ui, ...(candidate.ui ?? {}) }
+    englishCycle: { ...defaults.englishCycle, ...(candidate.englishCycle ?? {}) },
+    vocabulary: {
+      ...defaults.vocabulary,
+      ...(candidate.vocabulary ?? {}),
+      items: Array.isArray(candidate.vocabulary?.items) ? candidate.vocabulary.items : [],
+      sources: Array.isArray(candidate.vocabulary?.sources) ? candidate.vocabulary.sources : [],
+      reviewRecords: Array.isArray(candidate.vocabulary?.reviewRecords) ? candidate.vocabulary.reviewRecords : [],
+      importBatches: Array.isArray(candidate.vocabulary?.importBatches) ? candidate.vocabulary.importBatches : []
+    },
+    ui: { ...defaults.ui, ...(candidate.ui ?? {}), chapterExpanded: { ...defaults.ui.chapterExpanded, ...(candidate.ui?.chapterExpanded ?? {}) } }
   };
 
   // 产出字段是在已有版本上新增的；读取旧记录时补齐默认值。

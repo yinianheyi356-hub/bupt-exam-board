@@ -757,15 +757,28 @@ function politicsPlanIsPresent(state) {
   });
 }
 
+function englishCyclePlanIsPresent(state) {
+  const englishTasks = getTaskContexts(state, { includeArchived: true })
+    .filter(({ subject, task }) => subject.planSubjectKey === "english" && task.planKey);
+  if (!englishTasks.length) return false;
+  return englishTasks.some(({ task }) => task.englishCyclePhase === "doing")
+    && englishTasks.some(({ task }) => task.englishCyclePhase === "consolidating");
+}
+
 export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
   const examDate = new Date(`${state.settings.examDate}T00:00:00`);
-  const startDate = startOfDay(now);
+  // 以用户设置的备考开始日为规划锚点；旧版本未保存该字段时才退回今天。
+  const configuredStart = state.settings.preparationStartDate
+    ? new Date(`${state.settings.preparationStartDate}T00:00:00`)
+    : startOfDay(now);
+  const startDate = Number.isNaN(configuredStart.getTime()) ? startOfDay(now) : startOfDay(configuredStart);
   const endDate = addDays(startOfDay(examDate), -1);
   if (state.planning?.version === BUILTIN_PLAN_VERSION
     && state.planning?.politicsPlanVersion === POLITICS_PLAN_VERSION
     && state.planning?.endDate === dateKey(endDate)
     && state.planning?.examDate === state.settings.examDate
     && politicsPlanIsPresent(state)
+    && englishCyclePlanIsPresent(state)
     && !options.repair) {
     return { installed: false, taskCount: 0, planning: state.planning };
   }
@@ -803,6 +816,15 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
         ? [politicsEntry.sectionName, politicsEntry.title]
         : pool[phaseDayIndex % pool.length];
       const group = isWeeklyReview ? `${baseGroup}·周复盘` : baseGroup;
+      const englishCyclePhase = block.subjectKey === "english"
+        ? (dayIndex % 2 === 0 ? "doing" : "consolidating")
+        : null;
+      const englishExamLabel = state.englishCycle?.examType === "英语一" ? "一" : "二";
+      const englishCycleTitle = englishCyclePhase === "doing"
+        ? `英语${englishExamLabel}第 ${Math.floor(dayIndex / 2) + 1} 套真题：完成一套真题`
+        : englishCyclePhase === "consolidating"
+          ? `英语${englishExamLabel}第 ${Math.floor(dayIndex / 2) + 1} 套真题：巩固与复习`
+          : null;
       const title = politicsEntry
         ? politicsTaskTitle(politicsEntry, phase, isWeeklyReview)
         : (isWeeklyReview ? `周复盘：${baseTitle}` : baseTitle);
@@ -812,6 +834,20 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
         // Only an explicit repair may restore an archived built-in task;
         // ordinary launches must respect a user's archive choice.
         if (existingTask.archived && options.repair) existingTask.archived = false;
+        if (englishCyclePhase) Object.assign(existingTask, {
+          englishCyclePhase,
+          englishSetIndex: Math.floor(dayIndex / 2),
+          englishExamType: state.englishCycle?.examType || "英语二",
+          englishSection: existingTask.englishSection || "Text 1～4 / 完形 / 新题型 / 翻译"
+        });
+        // 旧版本内置英语任务没有周期字段时，补齐自动生成的标题和说明；
+        // 已经被用户手动改名的任务则保留原内容。
+        const looksLikeLegacyEnglishTask = existingTask.title === baseTitle || existingTask.title === englishCycleTitle;
+        if (englishCyclePhase && !existingTask.englishCycleMigrated && looksLikeLegacyEnglishTask) {
+          existingTask.title = englishCycleTitle ?? existingTask.title;
+          existingTask.details = `${phase.objective}\n两天一套真题计划：${englishCyclePhase === "doing" ? "今天完成整套真题并记录文章/题型错因。" : "今天巩固、整理并复习前一天真题中的词汇、长难句和错题。"}\n学习块：${block.label}，2 小时，4 个 25 分钟番茄。`;
+          existingTask.englishCycleMigrated = true;
+        }
         continue;
       }
 
@@ -825,9 +861,11 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
       const scheduledAt = localDateAt(day, block.startHour, block.startMinute);
       const dueAt = new Date(scheduledAt.getTime() + 120 * 60_000);
       const task = createTask({
-        title,
+        title: englishCycleTitle ?? title,
         details: politicsEntry
           ? politicsTaskDetails(politicsEntry, phase, block, isWeeklyReview)
+          : englishCyclePhase
+            ? `${phase.objective}\n两天一套真题计划：${englishCyclePhase === "doing" ? "今天完成整套真题并记录文章/题型错因。" : "今天巩固、整理并复习前一天真题中的词汇、长难句和错题。"}\n学习块：${block.label}，2 小时，4 个 25 分钟番茄。`
           : taskDetails(definition, phase, block, baseTitle, isWeeklyReview),
         status: "notStarted",
         priority: phase.key === "final" ? "high" : "normal",
@@ -856,7 +894,11 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
         outlineId: politicsEntry?.outlineId ?? null,
         outlineSectionKey: politicsEntry?.sectionKey ?? null,
         outlineSectionName: politicsEntry?.sectionName ?? null,
-        politicsPlanVersion: politicsEntry ? POLITICS_PLAN_VERSION : null
+        politicsPlanVersion: politicsEntry ? POLITICS_PLAN_VERSION : null,
+        englishCyclePhase,
+        englishSetIndex: englishCyclePhase ? Math.floor(dayIndex / 2) : null,
+        englishExamType: englishCyclePhase ? (state.englishCycle?.examType || "英语二") : null,
+        englishSection: englishCyclePhase ? "Text 1～4 / 完形 / 新题型 / 翻译" : null
       });
       chapter.tasks.push(task);
       createdCount += 1;

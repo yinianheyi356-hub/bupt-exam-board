@@ -10,6 +10,8 @@ import {
   createTask,
   dateKey,
   daysBetween,
+  englishCycleForDate,
+  updateEnglishCycle,
   deferTaskOneDay,
   durationText,
   findContext,
@@ -28,7 +30,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.3.0";
+} from "./domain.js?v=1.4.0";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -40,15 +42,31 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.3.0";
+} from "./storage.js?v=1.4.0";
 import {
   BUILTIN_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.3.0";
+} from "./study-plan.js?v=1.4.0";
+import {
+  VOCABULARY_PROMPT,
+  applyVocabularyImport,
+  archiveVocabularyItem,
+  buildVocabularyImportPreview,
+  highlightVocabularySentence,
+  markVocabularyMastered,
+  normalizeVocabularyState,
+  restoreVocabularyItem,
+  reviewVocabularyItem,
+  sourcesForVocabularyItem,
+  undoVocabularyReview,
+  unarchiveVocabularyItem,
+  vocabularyQueueForDate,
+  vocabularyRemainingCount
+} from "./vocabulary.js?v=1.4.0";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -95,6 +113,13 @@ const runtime = {
   showArchived: false,
   modal: null,
   pendingFocusCompletion: null,
+  vocabularyPreview: null,
+  vocabularyReviewItemId: null,
+  vocabularyLastRecordId: null,
+  vocabularySourceTaskId: null,
+  vocabularyLibraryQuery: "",
+  vocabularyFilters: { status: "all", year: "all", examType: "all", section: "all", due: "all" },
+  vocabularyLibraryLimit: 100,
   currentDateKey: dateKey(),
   boardPhase: "foundation"
 };
@@ -429,6 +454,7 @@ function renderBoardTask(context) {
         }).join("")}</div>` : ""}
       </div>
       <div class="row-actions">
+        ${subject.planSubjectKey === "english" ? `<button class="icon-button" data-action="open-task-vocabulary-review" data-task-id="${task.id}" title="复习本真题生词" aria-label="复习 ${escapeHTML(task.title)} 的生词">${icon("languages", 17)}</button>` : ""}
         <button class="icon-button" data-action="open-materials" data-task-id="${task.id}" title="资料与笔记" aria-label="打开 ${escapeHTML(task.title)} 的资料与笔记">${icon(materialCount ? "folder-open" : "paperclip", 17)}</button>
         <button class="icon-button" data-action="edit-task" data-subject-id="${subject.id}" data-module-id="${module.id}" data-chapter-id="${chapter.id}" data-task-id="${task.id}" title="编辑任务" aria-label="编辑 ${escapeHTML(task.title)}">${icon("pencil", 17)}</button>
         <button class="icon-button danger" data-action="delete-task" data-subject-id="${subject.id}" data-module-id="${module.id}" data-chapter-id="${chapter.id}" data-task-id="${task.id}" title="删除任务" aria-label="删除 ${escapeHTML(task.title)}">${icon("trash-2", 17)}</button>
@@ -441,8 +467,11 @@ function renderChapter(subject, module, chapter) {
     .filter(task => runtime.showArchived || !task.archived)
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const progress = hierarchyProgress(chapter);
+  const expanded = Object.prototype.hasOwnProperty.call(state.ui.chapterExpanded ?? {}, chapter.id)
+    ? state.ui.chapterExpanded[chapter.id] === true
+    : !chapter.planKey;
   return `
-    <details class="hierarchy chapter-level" ${chapter.planKey ? "" : "open"}>
+    <details class="hierarchy chapter-level" data-chapter-id="${escapeHTML(chapter.id)}" ${expanded ? "open" : ""}>
       <summary>
         <div class="summary-main">
           <span class="disclosure">${icon("chevron-right", 17)}</span>
@@ -490,6 +519,28 @@ function renderModule(subject, module) {
     </details>`;
 }
 
+function renderEnglishCycleCard() {
+  const cycle = englishCycleForDate(state, new Date());
+  const next = cycle.phase === "doing" ? "巩固昨天完成的整套真题" : "开始下一套真题";
+  const queueCount = vocabularyRemainingCount(state, new Date());
+  return `
+    <section class="english-cycle-card">
+      <div class="english-cycle-main">
+        <div class="section-heading compact-heading"><div><span class="section-icon blue">${icon("repeat-2", 18)}</span><h3>两天一套真题</h3></div><span class="status-pill">${escapeHTML(cycle.phaseLabel)}</span></div>
+        <div class="english-cycle-meta"><strong>${escapeHTML(cycle.year)}</strong><span>${escapeHTML(cycle.examType)} · ${escapeHTML(cycle.section)}</span><span>今日：${escapeHTML(cycle.status === "completed" ? "已完成" : cycle.status === "deferred" ? "已顺延" : cycle.phaseLabel)}</span></div>
+        <p>下一阶段：${formatDate(cycle.nextDate)} · ${escapeHTML(next)}</p>
+      </div>
+      <div class="english-cycle-actions">
+        <button class="secondary-command compact" data-action="english-cycle-defer">顺延</button>
+        <button class="secondary-command compact" data-action="english-cycle-makeup">补做</button>
+        <button class="secondary-command compact" data-action="english-cycle-skip">跳过</button>
+        <button class="secondary-command compact" data-action="english-cycle-restart">重新开始</button>
+        <button class="secondary-command compact" data-action="open-english-cycle-settings">设置开始日</button>
+      </div>
+      <div class="english-vocabulary-summary"><span>独立单词复习</span><strong>${queueCount ? `剩余 ${queueCount} 个词条` : "今日复习已完成"}</strong><button class="text-command" data-action="open-vocabulary-review">开始复习</button></div>
+    </section>`;
+}
+
 function renderSubject(subject) {
   const visibleModules = (subject.modules ?? [])
     .filter(module => (runtime.showArchived || !module.archived)
@@ -499,6 +550,14 @@ function renderSubject(subject) {
         || module.planKey.endsWith(`:${runtime.boardPhase}`)))
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   const progress = hierarchyProgress(subject);
+  const isEnglish = subject.planSubjectKey === "english" || /英语/.test(subject.name);
+  const englishActions = isEnglish ? `
+    <div class="english-board-tools">
+      <button class="secondary-command compact" data-action="open-vocabulary-prompt">${icon("sparkles", 16)}<span>整理提示词</span></button>
+      <button class="secondary-command compact" data-action="open-vocabulary-import">${icon("file-plus-2", 16)}<span>导入生词</span></button>
+      <button class="primary-command compact" data-action="open-vocabulary-review">${icon("book-open-check", 16)}<span>单词复习</span></button>
+      <button class="secondary-command compact" data-action="open-vocabulary-library">${icon("library", 16)}<span>词库</span></button>
+    </div>` : "";
   return `
     <section class="subject-section" style="--subject-color:${escapeHTML(subject.color)}">
       <header class="subject-header">
@@ -513,6 +572,8 @@ function renderSubject(subject) {
           <button class="icon-button danger" data-action="delete-subject" data-subject-id="${subject.id}" title="删除科目" aria-label="删除 ${escapeHTML(subject.name)}">${icon("trash-2", 17)}</button>
         </div>
       </header>
+      ${englishActions}
+      ${isEnglish ? renderEnglishCycleCard() : ""}
       <div class="subject-content">
         ${visibleModules.length
           ? visibleModules.map(module => renderModule(subject, module)).join("")
@@ -550,6 +611,11 @@ function renderBoardPage() {
       <div class="segmented-control phase-filter" role="tablist" aria-label="规划阶段">
         <button data-action="board-phase" data-phase="all" class="${runtime.boardPhase === "all" ? "is-selected" : ""}">全部</button>
         ${PLAN_PHASES.map(phase => `<button data-action="board-phase" data-phase="${phase.key}" class="${runtime.boardPhase === phase.key ? "is-selected" : ""}">${phase.name.replace(/阶段[一二三四五]·/, "")}</button>`).join("")}
+      </div>
+      <div class="board-fold-actions" aria-label="章节折叠控制">
+        <span>政治章节</span>
+        <button class="secondary-command compact" data-action="expand-politics-chapters">${icon("chevrons-down", 16)}<span>全部展开</span></button>
+        <button class="secondary-command compact" data-action="collapse-politics-chapters">${icon("chevrons-up", 16)}<span>全部收起</span></button>
       </div>
       <div class="subject-list">
         ${visibleSubjects.length ? visibleSubjects.map(renderSubject).join("") : emptyState("layout-list", "还没有科目")}
@@ -944,6 +1010,168 @@ function openTagManager() {
       ${state.tags.length ? state.tags.map(tag => `
         <div><span class="tag-chip" style="--tag-color:${escapeHTML(tag.color)}">${escapeHTML(tag.name)}</span><button class="icon-button danger" data-action="delete-tag" data-tag-id="${tag.id}" title="删除标签" aria-label="删除 ${escapeHTML(tag.name)}">${icon("trash-2", 16)}</button></div>`).join("") : emptyState("tags", "还没有标签")}
     </div>`, { title: "标签管理", kind: "tags" });
+}
+
+function vocabularyItemLabel(item) {
+  const status = item.status === "mastered" ? "已记牢" : item.status === "new" ? "新词" : "复习中";
+  return `${item.term} · ${status}`;
+}
+
+function openVocabularyPrompt() {
+  openModal(`
+    <div class="prompt-modal">
+      <p>把做题图片交给支持图片识别的 AI，要求它只提取黄色高亮并输出三列表格。复制下面的固定提示词即可复用。</p>
+      <textarea id="vocabulary-prompt-text" rows="18" readonly>${escapeHTML(VOCABULARY_PROMPT)}</textarea>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="copy-vocabulary-prompt">${icon("copy", 17)}<span>复制提示词</span></button><button type="button" class="primary-command" data-action="close-modal">知道了</button></div>
+    </div>`, { title: "生词图片整理提示词", kind: "vocabulary-prompt", wide: true });
+}
+
+function vocabularyImportForm() {
+  return `
+    <form id="vocabulary-import-form" class="modal-form" data-mode="input">
+      <div class="form-grid two-columns">
+        ${textField("year", "真题年份", "", true)}
+        <label class="field"><span>试卷类型</span><select name="examType" required><option value="英语二">英语二</option><option value="英语一">英语一</option></select></label>
+        <label class="field"><span>来源位置</span><select name="section" required>${["Text 1", "Text 2", "Text 3", "Text 4", "完形", "新题型", "翻译", "自定义"].map(section => `<option>${section}</option>`).join("")}</select></label>
+        ${textField("customSection", "自定义来源（可选）", "", false)}
+      </div>
+      <label class="field"><span>生词清单</span><textarea name="originalText" rows="14" required placeholder="粘贴 Markdown 三列表格、TSV 或 CSV"></textarea></label>
+      <label class="field"><span>备注（可选）</span><textarea name="note" rows="2" maxlength="500"></textarea></label>
+      <p class="form-hint">系统会先解析并展示预览，不会直接写入正式词库。</p>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="close-modal">取消</button><button type="submit" class="primary-command">${icon("scan-search", 17)}<span>解析并预览</span></button></div>
+    </form>`;
+}
+
+function renderVocabularyPreview(preview) {
+  const rows = preview?.rows ?? [];
+  return `
+    <form id="vocabulary-preview-form" class="modal-form" data-mode="preview">
+      ${preview?.parserErrors?.length ? `<div class="import-error">${preview.parserErrors.map(escapeHTML).join("；")}</div>` : ""}
+      <div class="import-summary"><strong>已识别 ${rows.length} 行</strong><span>格式：${escapeHTML(preview.format)}</span><span>红色提示需处理后才能导入</span></div>
+      <div class="vocabulary-preview-list">
+        ${rows.map((row, index) => `
+          <article class="vocabulary-preview-row ${row.errors?.length || row.warnings?.length ? "has-warning" : ""}">
+            <div class="preview-row-number">${index + 1}</div>
+            <label class="field"><span>词条</span><input name="term-${index}" value="${escapeHTML(row.term)}"></label>
+            <label class="field"><span>词性与词义</span><input name="definition-${index}" value="${escapeHTML(row.definition)}"></label>
+            <label class="field"><span>真题原句</span><textarea name="sentence-${index}" rows="2">${escapeHTML(row.sentence)}</textarea></label>
+            ${row.existingItemId ? `<label class="field"><span>释义冲突</span><select name="definitionChoice-${index}"><option value="merge">合并释义</option><option value="keep">保留原释义</option><option value="new">使用新释义</option></select></label>` : ""}
+            ${row.masteredChoice ? `<label class="field"><span>已记牢词</span><select name="masteredChoice-${index}"><option value="keep">追加来源并保持已记牢</option><option value="restore">恢复到复习队列</option></select></label>` : ""}
+            ${row.errors?.length || row.warnings?.length ? `<p class="row-errors">${[...(row.errors ?? []), ...(row.warnings ?? [])].map(escapeHTML).join("；")}</p>` : ""}
+            <button type="button" class="icon-button danger" data-action="remove-preview-row" data-preview-index="${index}" title="删除这一行" aria-label="删除第 ${index + 1} 行">${icon("trash-2", 16)}</button>
+          </article>`).join("")}
+      </div>
+      <label class="toggle-field"><span>允许原句缺失（稍后手动补充）</span><input name="acceptMissingSentence" type="checkbox"><span class="toggle-ui"></span></label>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="back-vocabulary-import">返回修改</button><button type="submit" class="primary-command">${icon("database-zap", 17)}<span>确认导入</span></button></div>
+    </form>`;
+}
+
+function openVocabularyImport() {
+  const englishTask = planTasksForDate(state, new Date()).find(({ subject }) => subject.planSubjectKey === "english");
+  runtime.vocabularySourceTaskId = englishTask?.task.id ?? null;
+  runtime.vocabularyPreview = null;
+  openModal(vocabularyImportForm(), { title: "导入生词", kind: "vocabulary-import", wide: true });
+}
+
+function openVocabularyReview(sourceTaskId = null) {
+  normalizeVocabularyState(state);
+  runtime.vocabularySourceTaskId = sourceTaskId ?? runtime.vocabularySourceTaskId;
+  if (!runtime.vocabularySourceTaskId) {
+    const englishTask = planTasksForDate(state, new Date()).find(({ subject }) => subject.planSubjectKey === "english");
+    runtime.vocabularySourceTaskId = englishTask?.task.id ?? null;
+  }
+  sourceTaskId = runtime.vocabularySourceTaskId;
+  const queue = vocabularyQueueForDate(state, new Date(), { sourceTaskId });
+  if (!queue.length) {
+    openModal(`<div class="empty-state">${icon("check-circle-2", 24)}<span>今日复习已完成</span></div><div class="modal-actions"><button type="button" class="primary-command" data-action="close-modal">完成</button></div>`, { title: "单词复习", kind: "vocabulary-review" });
+    return;
+  }
+  const item = queue.find(candidate => candidate.id === runtime.vocabularyReviewItemId) ?? queue[0];
+  runtime.vocabularyReviewItemId = item.id;
+  const source = sourcesForVocabularyItem(state, item.id, sourceTaskId)[0];
+  const highlight = highlightVocabularySentence(source?.originalSentence ?? "暂无原句，请补充", item.term, source?.surfaceForm, source?.highlightText);
+  const reviews = state.vocabulary.reviewRecords.filter(record => record.vocabularyItemId === item.id && !record.undoneAt).length;
+  openModal(`
+    <div class="vocabulary-card" data-vocabulary-item-id="${item.id}">
+      <div class="vocabulary-card-meta"><span>${escapeHTML(source?.year ?? "未设置年份")} · ${escapeHTML(source?.examType ?? "英语二")} · ${escapeHTML(source?.section ?? "未设置位置")}</span><span data-vocabulary-remaining>剩余 ${queue.length} 个词条</span></div>
+      <h3>${escapeHTML(item.term)}</h3>
+      <p class="vocabulary-sentence ${highlight.matched ? "" : "needs-manual-highlight"}">${highlight.html}</p>
+      ${!highlight.matched ? `<label class="field"><span>手动指定高亮内容（可选）</span><input name="manualHighlightText" data-manual-highlight value="${escapeHTML(source?.highlightText ?? "")}" placeholder="填写原句中实际形式"></label>` : ""}
+      <div class="vocabulary-definition is-hidden" data-vocabulary-definition><strong>${escapeHTML(item.definition || "暂无释义")}</strong><small>本词累计复习 ${reviews} 次</small></div>
+      <div class="vocabulary-review-actions" data-review-actions>
+        <button type="button" class="review-choice remember" data-action="review-vocabulary" data-review-result="remembered" data-vocabulary-id="${item.id}">记住了</button>
+        <button type="button" class="review-choice forget" data-action="review-vocabulary" data-review-result="forgotten" data-vocabulary-id="${item.id}">没记住</button>
+      </div>
+      <div class="vocabulary-next-actions is-hidden" data-next-actions>
+        <button type="button" class="secondary-command" data-action="undo-vocabulary">撤销本次选择</button>
+        <button type="button" class="secondary-command" data-action="master-vocabulary" data-vocabulary-id="${item.id}">我已记牢</button>
+        <button type="button" class="primary-command" data-action="next-vocabulary">下一个</button>
+      </div>
+      ${state.vocabulary.sources.filter(sourceItem => sourceItem.vocabularyItemId === item.id).length > 1 ? `<details class="source-switcher"><summary>查看其他原句与来源</summary>${sourcesForVocabularyItem(state, item.id, sourceTaskId).map(sourceItem => `<p>${escapeHTML(sourceItem.year)} · ${escapeHTML(sourceItem.examType)} · ${escapeHTML(sourceItem.section)}<br>${escapeHTML(sourceItem.originalSentence)}</p>`).join("")}</details>` : ""}
+    </div>`, { title: "单词复习", kind: "vocabulary-review", wide: true });
+}
+
+function openVocabularyLibrary() {
+  normalizeVocabularyState(state);
+  const query = runtime.vocabularyLibraryQuery ?? "";
+  const filters = runtime.vocabularyFilters;
+  const years = [...new Set(state.vocabulary.sources.map(source => source.year).filter(Boolean))].sort().reverse();
+  const sections = [...new Set(state.vocabulary.sources.map(source => source.section).filter(Boolean))].sort();
+  const itemSources = itemId => state.vocabulary.sources.filter(source => source.vocabularyItemId === itemId);
+  const allItems = state.vocabulary.items.filter(item => {
+    if (item.status === "archived" && filters.status !== "archived") return false;
+    if (filters.status !== "all" && item.status !== filters.status) return false;
+    if (query && !item.term.toLocaleLowerCase().includes(query.toLocaleLowerCase())) return false;
+    const sources = itemSources(item.id);
+    if (filters.year !== "all" && !sources.some(source => source.year === filters.year)) return false;
+    if (filters.examType !== "all" && !sources.some(source => source.examType === filters.examType)) return false;
+    if (filters.section !== "all" && !sources.some(source => source.section === filters.section)) return false;
+    if (filters.due === "due" && !(item.status !== "mastered" && (!item.nextReviewAt || new Date(item.nextReviewAt) <= new Date()))) return false;
+    return true;
+  });
+  // 词库可能达到数万条，首屏只渲染一页，避免移动端一次性创建过多 DOM。
+  const items = allItems.slice(0, runtime.vocabularyLibraryLimit);
+  openModal(`
+    <div class="vocabulary-library">
+      <div class="inline-add-form"><input name="vocabularySearch" data-vocabulary-search value="${escapeHTML(query)}" placeholder="搜索词条"><span class="status-pill">共 ${allItems.length} 条</span></div>
+      <div class="vocabulary-filters">
+        <select data-vocabulary-filter="status"><option value="all">全部状态</option><option value="new" ${filters.status === "new" ? "selected" : ""}>新词</option><option value="learning" ${filters.status === "learning" ? "selected" : ""}>学习中</option><option value="reviewing" ${filters.status === "reviewing" ? "selected" : ""}>复习中</option><option value="mastered" ${filters.status === "mastered" ? "selected" : ""}>已记牢</option><option value="archived" ${filters.status === "archived" ? "selected" : ""}>回收站</option></select>
+        <select data-vocabulary-filter="year"><option value="all">全部年份</option>${years.map(year => `<option value="${escapeHTML(year)}" ${filters.year === year ? "selected" : ""}>${escapeHTML(year)}</option>`).join("")}</select>
+        <select data-vocabulary-filter="examType"><option value="all">英语一/二</option><option ${filters.examType === "英语一" ? "selected" : ""}>英语一</option><option ${filters.examType === "英语二" ? "selected" : ""}>英语二</option></select>
+        <select data-vocabulary-filter="section"><option value="all">全部位置</option>${sections.map(section => `<option value="${escapeHTML(section)}" ${filters.section === section ? "selected" : ""}>${escapeHTML(section)}</option>`).join("")}</select>
+        <select data-vocabulary-filter="due"><option value="all">全部日期</option><option value="due" ${filters.due === "due" ? "selected" : ""}>仅到期/逾期</option></select>
+      </div>
+      ${allItems.length > items.length ? `<p class="form-hint">当前显示前 ${items.length} 条，继续输入关键词可缩小范围。</p>` : ""}
+      <div class="library-list">${items.length ? items.map(item => `
+        <article class="library-row"><div><strong>${escapeHTML(item.term)}</strong><p>${escapeHTML(item.definition || "暂无释义")}</p><small>${item.status === "mastered" ? `已记牢于 ${formatDate(item.masteredAt)}` : item.status === "archived" ? `已归档于 ${formatDate(item.archivedAt)}` : item.nextReviewAt ? `下次复习 ${formatDate(item.nextReviewAt, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}` : "新词，待首次复习"}</small></div><div class="row-actions"><button class="icon-button" data-action="open-vocabulary-detail" data-vocabulary-id="${item.id}" title="详情">${icon("info", 16)}</button>${item.status === "archived" ? `<button class="icon-button" data-action="unarchive-vocabulary" data-vocabulary-id="${item.id}" title="恢复归档">${icon("archive-restore", 16)}</button>` : item.status !== "mastered" ? `<button class="icon-button" data-action="review-library-item" data-vocabulary-id="${item.id}" title="复习">${icon("play", 16)}</button>` : ""}${item.status === "mastered" ? `<button class="icon-button" data-action="restore-vocabulary" data-vocabulary-id="${item.id}" title="恢复复习">${icon("rotate-ccw", 16)}</button>` : item.status !== "archived" ? `<button class="icon-button danger" data-action="archive-vocabulary" data-vocabulary-id="${item.id}" title="归档">${icon("archive", 16)}</button>` : ""}</div></article>`).join("") : emptyState("library", "词库暂无词条")}</div>
+      <div class="modal-actions">${allItems.length > items.length ? `<button type="button" class="secondary-command" data-action="load-more-vocabulary">加载更多</button>` : ""}<button type="button" class="primary-command" data-action="close-modal">完成</button></div>
+    </div>`, { title: "全部词条与已记牢词库", kind: "vocabulary-library", wide: true });
+}
+
+function openEnglishCycleSettings() {
+  openModal(`
+    <form id="english-cycle-form" class="modal-form">
+      ${dateField("cycleStartDate", "计划开始日期", state.englishCycle?.startDate ?? dateKey())}
+      ${textField("currentYear", "当前真题年份或套卷名称", state.englishCycle?.currentYear ?? "", false)}
+      <div class="form-grid two-columns"><label class="field"><span>试卷类型</span><select name="examType"><option ${state.englishCycle?.examType === "英语二" ? "selected" : ""}>英语二</option><option ${state.englishCycle?.examType === "英语一" ? "selected" : ""}>英语一</option></select></label>${textField("currentSection", "当前文章/题型", state.englishCycle?.currentSection ?? "Text 1", false)}</div>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="close-modal">取消</button><button type="submit" class="primary-command">${icon("save", 17)}<span>保存周期</span></button></div>
+    </form>`, { title: "英语真题周期设置", kind: "english-cycle-settings" });
+}
+
+function openVocabularyDetail(itemId) {
+  const item = state.vocabulary.items.find(candidate => candidate.id === itemId);
+  if (!item) return;
+  const sources = sourcesForVocabularyItem(state, itemId);
+  const history = state.vocabulary.reviewRecords.filter(record => record.vocabularyItemId === itemId).slice().reverse();
+  openModal(`
+    <form id="vocabulary-edit-form" class="modal-form" data-vocabulary-id="${item.id}">
+      ${textField("term", "词条", item.term, true)}
+      <label class="field"><span>词性与词义</span><textarea name="definition" rows="4" required>${escapeHTML(item.definition)}</textarea></label>
+      <label class="field"><span>备注</span><textarea name="note" rows="3">${escapeHTML(item.note)}</textarea></label>
+      <section class="material-section"><div class="material-section-heading"><strong>全部真题来源与原句</strong></div>${sources.length ? sources.map((source, index) => `<label class="field source-detail"><span>${escapeHTML(source.year)} · ${escapeHTML(source.examType)} · ${escapeHTML(source.section)}</span><textarea name="sourceSentence-${index}" rows="2">${escapeHTML(source.originalSentence)}</textarea><input type="hidden" name="sourceId-${index}" value="${source.id}"></label>`).join("") : `<p class="form-hint">暂无来源</p>`}</section>
+      <section class="material-section"><div class="material-section-heading"><strong>复习历史（${history.length} 次）</strong></div>${history.length ? history.slice(0, 30).map(record => `<p class="source-detail">${formatDate(record.reviewedAt, { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${escapeHTML(record.result)}</p>`).join("") : `<p class="form-hint">暂无复习记录</p>`}</section>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="close-modal">取消</button><button type="submit" class="primary-command">${icon("save", 17)}<span>保存修改</span></button></div>
+    </form>`, { title: "词条详情", kind: "vocabulary-detail", wide: true });
 }
 
 function formatFileSize(bytes) {
@@ -1513,6 +1741,118 @@ async function handleClick(event) {
     renderShell();
     return;
   }
+  if (action === "expand-politics-chapters" || action === "collapse-politics-chapters") {
+    state.ui.chapterExpanded ??= {};
+    const expand = action === "expand-politics-chapters";
+    state.subjects.forEach(subject => {
+      if (subject.planSubjectKey !== "politics") return;
+      (subject.modules ?? []).forEach(module => {
+        if (!module.planKey?.startsWith("bupt-politics-")) return;
+        (module.chapters ?? []).forEach(chapter => {
+          if (chapter.planKey) state.ui.chapterExpanded[chapter.id] = expand;
+        });
+      });
+    });
+    scheduleSave();
+    renderShell();
+    return;
+  }
+  if (action === "open-vocabulary-prompt") return openVocabularyPrompt();
+  if (action === "copy-vocabulary-prompt") {
+    navigator.clipboard?.writeText(VOCABULARY_PROMPT).then(() => showToast("提示词已复制"), () => showToast("复制失败，请长按文本复制", "error"));
+    return;
+  }
+  if (action === "open-vocabulary-import") return openVocabularyImport();
+  if (action === "open-vocabulary-review") return openVocabularyReview();
+  if (action === "open-task-vocabulary-review") return openVocabularyReview(button.dataset.taskId);
+  if (action === "open-vocabulary-library") return openVocabularyLibrary();
+  if (action === "load-more-vocabulary") {
+    runtime.vocabularyLibraryLimit += 100;
+    return openVocabularyLibrary();
+  }
+  if (action === "back-vocabulary-import") return openVocabularyImport();
+  if (action === "remove-preview-row") {
+    if (runtime.vocabularyPreview?.rows) {
+      runtime.vocabularyPreview.rows.splice(Number(button.dataset.previewIndex), 1);
+      openModal(renderVocabularyPreview(runtime.vocabularyPreview), { title: "确认导入预览", kind: "vocabulary-preview", wide: true });
+    }
+    return;
+  }
+  if (action === "review-vocabulary") {
+    const itemId = button.dataset.vocabularyId;
+    const manualText = modalRoot.querySelector("[data-manual-highlight]")?.value?.trim();
+    if (manualText) {
+      const manualSource = sourcesForVocabularyItem(state, itemId, runtime.vocabularySourceTaskId)[0];
+      if (manualSource) manualSource.highlightText = manualText;
+    }
+    const reviewSource = sourcesForVocabularyItem(state, itemId, runtime.vocabularySourceTaskId)[0];
+    const result = reviewVocabularyItem(state, itemId, button.dataset.reviewResult, new Date(), reviewSource?.id ?? null);
+    if (!result) return;
+    runtime.vocabularyLastRecordId = result.record.id;
+    scheduleSave();
+    const definition = modalRoot.querySelector("[data-vocabulary-definition]");
+    const reviewActions = modalRoot.querySelector("[data-review-actions]");
+    const nextActions = modalRoot.querySelector("[data-next-actions]");
+    if (definition) { definition.classList.remove("is-hidden"); }
+    if (reviewActions) { reviewActions.classList.add("is-disabled"); reviewActions.querySelectorAll("button").forEach(item => { item.disabled = true; }); }
+    if (nextActions) nextActions.classList.remove("is-hidden");
+    const remainingLabel = modalRoot.querySelector("[data-vocabulary-remaining]");
+    const remaining = vocabularyRemainingCount(state, new Date());
+    if (remainingLabel) remainingLabel.textContent = remaining ? `剩余 ${remaining} 个词条` : "今日复习已完成";
+    return;
+  }
+  if (action === "undo-vocabulary") {
+    if (runtime.vocabularyLastRecordId && undoVocabularyReview(state, runtime.vocabularyLastRecordId)) {
+      scheduleSave();
+      showToast("本次选择已撤销");
+      openVocabularyReview(runtime.vocabularySourceTaskId);
+    }
+    return;
+  }
+  if (action === "next-vocabulary") return openVocabularyReview(runtime.vocabularySourceTaskId);
+  if (action === "master-vocabulary") {
+    if (!confirm("确认将该词移入已记牢词库并停止未来自动复习吗？")) return;
+    if (markVocabularyMastered(state, button.dataset.vocabularyId)) {
+      scheduleSave();
+      showToast("已移入已记牢词库");
+      openVocabularyReview(runtime.vocabularySourceTaskId);
+    }
+    return;
+  }
+  if (action === "review-library-item") {
+    runtime.vocabularyReviewItemId = button.dataset.vocabularyId;
+    return openVocabularyReview();
+  }
+  if (action === "open-vocabulary-detail") return openVocabularyDetail(button.dataset.vocabularyId);
+  if (action === "restore-vocabulary") {
+    const mode = prompt("输入 continue 保持原复习阶段，或输入 new 作为新词重新开始", "continue") === "new" ? "new" : "continue";
+    if (restoreVocabularyItem(state, button.dataset.vocabularyId, mode)) { scheduleSave(); openVocabularyLibrary(); showToast("已恢复到复习队列"); }
+    return;
+  }
+  if (action === "archive-vocabulary") {
+    if (!confirm("确认归档该词条？归档后不会删除历史来源，可在备份中恢复。")) return;
+    archiveVocabularyItem(state, button.dataset.vocabularyId);
+    scheduleSave();
+    openVocabularyLibrary();
+    return;
+  }
+  if (action === "unarchive-vocabulary") {
+    if (unarchiveVocabularyItem(state, button.dataset.vocabularyId)) {
+      scheduleSave();
+      openVocabularyLibrary();
+      showToast("词条已从回收站恢复");
+    }
+    return;
+  }
+  if (action === "english-cycle-defer" || action === "english-cycle-makeup" || action === "english-cycle-skip" || action === "english-cycle-restart") {
+    const actionMap = { "english-cycle-defer": "defer", "english-cycle-makeup": "makeup", "english-cycle-skip": "skip", "english-cycle-restart": "restart" };
+    updateEnglishCycle(state, actionMap[action]);
+    scheduleSave();
+    renderShell();
+    showToast("英语真题周期已更新");
+    return;
+  }
+  if (action === "open-english-cycle-settings") return openEnglishCycleSettings();
   if (action === "add-subject") return entityForm("subject");
   if (action === "add-module") return entityForm("module", { subjectId: button.dataset.subjectId });
   if (action === "add-chapter") return entityForm("chapter", { subjectId: button.dataset.subjectId, moduleId: button.dataset.moduleId });
@@ -1587,6 +1927,104 @@ async function handleClick(event) {
 async function handleSubmit(event) {
   event.preventDefault();
   const form = event.target;
+  if (form.id === "vocabulary-import-form") {
+    const data = new FormData(form);
+    const section = String(data.get("section") ?? "");
+    const customSection = String(data.get("customSection") ?? "").trim();
+    const originalText = String(data.get("originalText") ?? "");
+    const metadata = {
+      year: String(data.get("year") ?? "").trim(),
+      examType: data.get("examType"),
+      section: section === "自定义" ? customSection : section,
+      note: String(data.get("note") ?? "").trim(),
+      taskId: runtime.vocabularySourceTaskId
+    };
+    if (!metadata.year || !metadata.section || !originalText.trim()) {
+      showToast("请填写年份、来源位置并粘贴生词清单", "error");
+      return;
+    }
+    runtime.vocabularyPreview = buildVocabularyImportPreview(state, metadata, originalText);
+    runtime.vocabularyPreview.metadata = metadata;
+    runtime.vocabularyPreview.originalText = originalText;
+    openModal(renderVocabularyPreview(runtime.vocabularyPreview), { title: "确认导入预览", kind: "vocabulary-preview", wide: true });
+    return;
+  }
+  if (form.id === "vocabulary-preview-form") {
+    const data = new FormData(form);
+    const preview = runtime.vocabularyPreview;
+    if (!preview) return;
+    const editedRows = preview.rows.map((row, index) => ({
+      ...row,
+      term: String(data.get(`term-${index}`) ?? "").trim(),
+      definition: String(data.get(`definition-${index}`) ?? "").trim(),
+      sentence: String(data.get(`sentence-${index}`) ?? "").trim(),
+      definitionChoice: String(data.get(`definitionChoice-${index}`) ?? row.definitionChoice ?? "merge"),
+      masteredChoice: String(data.get(`masteredChoice-${index}`) ?? row.masteredChoice ?? "keep")
+    }));
+    const editedTerms = new Set();
+    preview.rows = editedRows.map(row => {
+      const errors = [];
+      const warnings = [];
+      if (!row.term) errors.push("词条为空");
+      if (!row.definition) errors.push("词义为空");
+      if (!row.sentence) errors.push("原句缺失");
+      const normalized = row.term.toLocaleLowerCase().replace(/\s+/g, " ");
+      if (normalized && editedTerms.has(normalized)) warnings.push("本批次重复词条，将合并来源");
+      if (normalized) editedTerms.add(normalized);
+      return { ...row, normalizedTerm: normalized, errors, warnings };
+    });
+    const result = applyVocabularyImport(state, preview, {
+      originalText: preview.originalText,
+      acceptMissingSentence: formBoolean(data, "acceptMissingSentence")
+    });
+    await saveNow();
+    runtime.vocabularyPreview = null;
+    closeModal();
+    renderShell();
+    const failureText = result.failures.length ? `；失败 ${result.failed} 条：${result.failures.slice(0, 3).map(item => `第${item.row}行${item.reason}`).join("、")}` : "";
+    showToast(`导入完成：新增 ${result.added}，合并 ${result.merged}，跳过 ${result.skipped}${failureText}`, result.failed ? "error" : "default");
+    return;
+  }
+  if (form.id === "english-cycle-form") {
+    const data = new FormData(form);
+    const startDate = String(data.get("cycleStartDate") ?? "");
+    const start = new Date(`${startDate}T00:00:00`);
+    if (!startDate || Number.isNaN(start.getTime())) { showToast("请选择有效的开始日期", "error"); return; }
+    state.englishCycle.startDate = startDate;
+    updateEnglishCycle(state, "reset", {
+      startDate,
+      year: String(data.get("currentYear") ?? "").trim(),
+      examType: data.get("examType"),
+      section: String(data.get("currentSection") ?? "").trim()
+    });
+    await saveNow();
+    closeModal();
+    renderShell();
+    showToast("英语真题周期已保存");
+    return;
+  }
+  if (form.id === "vocabulary-edit-form") {
+    const item = state.vocabulary.items.find(candidate => candidate.id === form.dataset.vocabularyId);
+    if (!item) return;
+    const data = new FormData(form);
+    const term = String(data.get("term") ?? "").trim();
+    const definition = String(data.get("definition") ?? "").trim();
+    if (!term || !definition) { showToast("词条和释义不能为空", "error"); return; }
+    item.term = term;
+    item.normalizedTerm = term.toLocaleLowerCase().replace(/\s+/g, " ");
+    item.definition = definition;
+    item.note = String(data.get("note") ?? "").trim();
+    sourcesForVocabularyItem(state, item.id).forEach((source, index) => {
+      const sentence = String(data.get(`sourceSentence-${index}`) ?? "").trim();
+      if (sentence) source.originalSentence = sentence;
+    });
+    item.updatedAt = new Date().toISOString();
+    await saveNow();
+    closeModal();
+    openVocabularyLibrary();
+    showToast("词条已更新");
+    return;
+  }
   if (form.id === "entity-form") return handleEntitySubmit(form);
   if (form.id === "schedule-form") return handleScheduleSubmit(form);
   if (form.id === "focus-output-form") {
@@ -1681,7 +2119,8 @@ async function handleSubmit(event) {
       notificationsEnabled: formBoolean(data, "notificationsEnabled"),
       appearance: data.get("appearance")
     });
-    const planningExamDateChanged = state.planning?.examDate !== state.settings.examDate;
+    const planningDateChanged = state.planning?.examDate !== state.settings.examDate
+      || state.planning?.startDate !== state.settings.preparationStartDate;
     if (state.settings.notificationsEnabled && "Notification" in window && Notification.permission === "default") {
       try {
         const permission = await Notification.requestPermission();
@@ -1691,7 +2130,7 @@ async function handleSubmit(event) {
       }
     }
     const deferredCount = runAutomaticDeferral(state);
-    const planResult = planningExamDateChanged
+    const planResult = planningDateChanged
       ? installBuiltinStudyPlan(state)
       : null;
     applyAppearance();
@@ -1713,6 +2152,16 @@ async function handleChange(event) {
     renderShell();
   }
   if (event.target.id === "focus-task-select") runtime.focusTaskId = event.target.value;
+  if (event.target.matches("[data-vocabulary-search]")) {
+    runtime.vocabularyLibraryQuery = event.target.value;
+    openVocabularyLibrary();
+    return;
+  }
+  if (event.target.matches("[data-vocabulary-filter]")) {
+    runtime.vocabularyFilters[event.target.dataset.vocabularyFilter] = event.target.value;
+    openVocabularyLibrary();
+    return;
+  }
   if (event.target.id === "task-attachment-file" && event.target.files?.[0]) {
     const file = event.target.files[0];
     const taskId = event.target.dataset.taskId;
@@ -1746,6 +2195,7 @@ async function handleChange(event) {
       const imported = normalizeState(await readBackup(event.target.files[0]));
       if (!confirm("导入会覆盖当前浏览器中的全部数据，确定继续吗？")) return;
       state = imported;
+      normalizeVocabularyState(state);
       const planResult = installBuiltinStudyPlan(state);
       runtime.tab = state.ui.selectedTab ?? "today";
       runtime.currentDateKey = dateKey();
@@ -1870,6 +2320,14 @@ function handlePointerCancel(event) {
   if (swipeGesture?.pointerId === event.pointerId) swipeGesture = null;
 }
 
+function handleDetailsToggle(event) {
+  const details = event.target;
+  if (!(details instanceof HTMLDetailsElement) || !details.dataset.chapterId) return;
+  state.ui.chapterExpanded ??= {};
+  state.ui.chapterExpanded[details.dataset.chapterId] = details.open;
+  scheduleSave();
+}
+
 async function registerServiceWorker() {
   if ("serviceWorker" in navigator && location.protocol !== "file:") {
     try {
@@ -1886,6 +2344,7 @@ async function registerServiceWorker() {
 
 async function initialize() {
   state = normalizeState(await loadPersistedState());
+  normalizeVocabularyState(state);
   const planResult = installBuiltinStudyPlan(state);
   runtime.tab = state.ui.selectedTab ?? "today";
   runtime.currentDateKey = dateKey();
@@ -1909,6 +2368,7 @@ async function initialize() {
   modalRoot.addEventListener("click", handleClick);
   modalRoot.addEventListener("submit", handleSubmit);
   modalRoot.addEventListener("change", handleChange);
+  document.addEventListener("toggle", handleDetailsToggle, true);
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && runtime.modal) {
       if (runtime.modal === "focus-output") skipFocusOutput();
