@@ -85,7 +85,7 @@ export function englishCycleForDate(state, day = new Date()) {
   const dayIndex = Math.max(0, daysBetween(start, target));
   const cycleIndex = Math.floor(dayIndex / 2);
   const phase = dayIndex % 2 === 0 ? "doing" : "consolidating";
-  const cycleKey = `${cycle.examType || "英语二"}:${cycle.currentYear || "第" + (cycleIndex + 1) + "套"}:${cycleIndex}`;
+  const cycleKey = `${cycle.examType || "英语一"}:${cycle.currentYear || "第" + (cycleIndex + 1) + "套"}:${cycleIndex}`;
   const skipped = (cycle.skippedCycles ?? []).some(item => item.cycleKey === cycleKey);
   const status = skipped
     ? "skipped"
@@ -100,7 +100,7 @@ export function englishCycleForDate(state, day = new Date()) {
     dayIndex,
     phase,
     phaseLabel: phase === "doing" ? "做题日" : "巩固日",
-    examType: cycle.examType || "英语二",
+    examType: cycle.examType || "英语一",
     year: cycle.currentYear || `第 ${cycleIndex + 1} 套`,
     section: cycle.currentSection || "Text 1",
     status,
@@ -188,7 +188,7 @@ export function createDefaultState(now = new Date()) {
     planning: null,
     subjects: [
       seedSubject("思想政治理论", "#8a4b4b", 0),
-      seedSubject("英语二", "#315a7d", 1),
+      seedSubject("英语一", "#315a7d", 1),
       seedSubject("334 新闻与传播专业综合能力", "#1f5d42", 2),
       seedSubject("440 新闻与传播专业基础", "#8a6a32", 3)
     ],
@@ -204,7 +204,7 @@ export function createDefaultState(now = new Date()) {
     },
     englishCycle: {
       startDate: dateKey(now),
-      examType: "英语二",
+      examType: "英语一",
       currentYear: "",
       currentSection: "Text 1",
       phase: "doing",
@@ -216,7 +216,8 @@ export function createDefaultState(now = new Date()) {
     ui: {
       selectedTab: "today",
       boardExpanded: {},
-      chapterExpanded: {}
+      chapterExpanded: {},
+      moduleExpanded: {}
     }
   };
 }
@@ -240,7 +241,13 @@ export function normalizeState(candidate) {
     planning: candidate.planning && typeof candidate.planning === "object"
       ? candidate.planning
       : null,
-    englishCycle: { ...defaults.englishCycle, ...(candidate.englishCycle ?? {}) },
+    englishCycle: {
+      ...defaults.englishCycle,
+      ...(candidate.englishCycle ?? {}),
+      // English I is the current default for this BUPT new-media plan.
+      // Preserve an explicit English II choice from an existing backup.
+      examType: candidate.englishCycle?.examType === "英语二" ? "英语二" : "英语一"
+    },
     vocabulary: {
       ...defaults.vocabulary,
       ...(candidate.vocabulary ?? {}),
@@ -249,7 +256,12 @@ export function normalizeState(candidate) {
       reviewRecords: Array.isArray(candidate.vocabulary?.reviewRecords) ? candidate.vocabulary.reviewRecords : [],
       importBatches: Array.isArray(candidate.vocabulary?.importBatches) ? candidate.vocabulary.importBatches : []
     },
-    ui: { ...defaults.ui, ...(candidate.ui ?? {}), chapterExpanded: { ...defaults.ui.chapterExpanded, ...(candidate.ui?.chapterExpanded ?? {}) } }
+    ui: {
+      ...defaults.ui,
+      ...(candidate.ui ?? {}),
+      chapterExpanded: { ...defaults.ui.chapterExpanded, ...(candidate.ui?.chapterExpanded ?? {}) },
+      moduleExpanded: { ...defaults.ui.moduleExpanded, ...(candidate.ui?.moduleExpanded ?? {}) }
+    }
   };
 
   // 产出字段是在已有版本上新增的；读取旧记录时补齐默认值。

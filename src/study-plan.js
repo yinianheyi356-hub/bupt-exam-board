@@ -7,11 +7,13 @@ import {
   daysBetween,
   getTaskContexts,
   startOfDay
-} from "./domain.js?v=1.3.0";
+} from "./domain.js?v=1.5.0";
 
 export const BUILTIN_PLAN_VERSION = "bupt-mjc-2027-v2";
 // 政治目录单独维护版本。四科日程共用 BUILTIN_PLAN_VERSION，政治目录更新时只迁移政治任务。
 export const POLITICS_PLAN_VERSION = "bupt-politics-2027-v2";
+// 英语采用独立的两天一套真题日任务容器，避免旧版按阶段生成的任务继续显示在看板。
+export const ENGLISH_CYCLE_PLAN_VERSION = "bupt-english-cycle-2027-v1";
 
 // 按用户提供的《考研政治核心考案》目录整理。每一项都是看板中的一个正式章节；
 // 章节编号保留在名称中，便于在看板、笔记和附件之间直接定位原书内容。
@@ -440,7 +442,7 @@ const subjectDefinitions = {
     routine: ["框架输入", "主动回忆", "选择题训练", "错题与材料输出"]
   },
   english: {
-    name: "英语二",
+    name: "英语一",
     color: "#315a7d",
     pools: {
       foundation: englishFoundation,
@@ -502,6 +504,9 @@ function phaseForIndex(ranges, dayIndex) {
 function ensureSubject(state, subjectKey, definition) {
   let subject = state.subjects.find(item => item.planSubjectKey === subjectKey)
     ?? state.subjects.find(item => item.name === definition.name);
+  if (!subject && subjectKey === "english") {
+    subject = state.subjects.find(item => item.name === "英语二");
+  }
   if (!subject) {
     subject = {
       id: `plan-subject-${subjectKey}`,
@@ -535,6 +540,41 @@ function ensureModule(subject, phase) {
     subject.modules.push(module);
   }
   return module;
+}
+
+function ensureEnglishCycleModule(subject) {
+  const planKey = `${ENGLISH_CYCLE_PLAN_VERSION}:module`;
+  let module = subject.modules.find(item => item.planKey === planKey);
+  if (!module) {
+    module = createModule("两天一套真题", subject.modules.length);
+    Object.assign(module, {
+      id: "plan-module-english-cycle",
+      notes: "第一天完成整套真题，第二天巩固、整理并复习前一天真题。",
+      planKey,
+      planModuleKey: "english-cycle",
+      weight: 1
+    });
+    subject.modules.push(module);
+  } else {
+    module.planModuleKey = "english-cycle";
+    module.archived = false;
+  }
+  return module;
+}
+
+function ensureEnglishCycleChapter(module, setIndex) {
+  const planKey = `${ENGLISH_CYCLE_PLAN_VERSION}:set:${setIndex}`;
+  let chapter = module.chapters.find(item => item.planKey === planKey);
+  if (!chapter) {
+    chapter = createChapter(`第 ${setIndex + 1} 套真题`, module.chapters.length);
+    Object.assign(chapter, {
+      id: `plan-chapter-english-cycle-${setIndex}`,
+      planKey,
+      planChapterKey: `set-${setIndex}`
+    });
+    module.chapters.push(chapter);
+  }
+  return chapter;
 }
 
 function ensurePoliticsModule(subject, definition, options = {}) {
@@ -757,9 +797,36 @@ function politicsPlanIsPresent(state) {
   });
 }
 
+function migrateLegacyEnglishPlan(state) {
+  let archivedCount = 0;
+  for (const subject of state.subjects) {
+    const isEnglish = subject.planSubjectKey === "english" || /英语/.test(subject.name);
+    if (!isEnglish) continue;
+    subject.planSubjectKey = "english";
+    if (subject.name === "英语二") subject.name = "英语一";
+    for (const module of subject.modules ?? []) {
+      const isCurrentModule = module.planKey === `${ENGLISH_CYCLE_PLAN_VERSION}:module`;
+      const hasLegacyBuiltinTask = (module.chapters ?? []).some(chapter =>
+        (chapter.tasks ?? []).some(task => task.planKey?.startsWith(`${BUILTIN_PLAN_VERSION}:`)));
+      if (!isCurrentModule && (module.planKey || hasLegacyBuiltinTask)) {
+        if (!module.archived) archivedCount += 1;
+        module.archived = true;
+        for (const chapter of module.chapters ?? []) {
+          for (const task of chapter.tasks ?? []) {
+            if (task.planKey?.startsWith(`${BUILTIN_PLAN_VERSION}:`) && !task.archived) archivedCount += 1;
+            if (task.planKey?.startsWith(`${BUILTIN_PLAN_VERSION}:`)) task.archived = true;
+          }
+        }
+      }
+    }
+  }
+  return archivedCount;
+}
+
 function englishCyclePlanIsPresent(state) {
   const englishTasks = getTaskContexts(state, { includeArchived: true })
-    .filter(({ subject, task }) => subject.planSubjectKey === "english" && task.planKey);
+    .filter(({ subject, task }) => subject.planSubjectKey === "english"
+      && task.planKey?.startsWith(`${ENGLISH_CYCLE_PLAN_VERSION}:`));
   if (!englishTasks.length) return false;
   return englishTasks.some(({ task }) => task.englishCyclePhase === "doing")
     && englishTasks.some(({ task }) => task.englishCyclePhase === "consolidating");
@@ -787,6 +854,7 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
   if (!totalDays) return { installed: false, taskCount: 0, planning: null };
 
   const migration = migrateLegacyBuiltinPlan(state);
+  const archivedEnglishCount = migrateLegacyEnglishPlan(state);
   ensurePlanTags(state);
   const ranges = calculatePhaseRanges(totalDays);
   let createdCount = 0;
@@ -815,7 +883,9 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
       const [baseGroup, baseTitle] = politicsEntry
         ? [politicsEntry.sectionName, politicsEntry.title]
         : pool[phaseDayIndex % pool.length];
-      const group = isWeeklyReview ? `${baseGroup}·周复盘` : baseGroup;
+      const group = block.subjectKey === "english"
+        ? `第 ${Math.floor(dayIndex / 2) + 1} 套真题`
+        : (isWeeklyReview ? `${baseGroup}·周复盘` : baseGroup);
       const englishCyclePhase = block.subjectKey === "english"
         ? (dayIndex % 2 === 0 ? "doing" : "consolidating")
         : null;
@@ -827,8 +897,12 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
           : null;
       const title = politicsEntry
         ? politicsTaskTitle(politicsEntry, phase, isWeeklyReview)
-        : (isWeeklyReview ? `周复盘：${baseTitle}` : baseTitle);
-      const planKey = `${BUILTIN_PLAN_VERSION}:${dateKey(day)}:${block.subjectKey}`;
+        : block.subjectKey === "english"
+          ? englishCycleTitle
+          : (isWeeklyReview ? `周复盘：${baseTitle}` : baseTitle);
+      const planKey = block.subjectKey === "english"
+        ? `${ENGLISH_CYCLE_PLAN_VERSION}:${dateKey(day)}:english`
+        : `${BUILTIN_PLAN_VERSION}:${dateKey(day)}:${block.subjectKey}`;
       const existingTask = findTaskByPlanKey(state, planKey);
       if (existingTask) {
         // Only an explicit repair may restore an archived built-in task;
@@ -837,7 +911,7 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
         if (englishCyclePhase) Object.assign(existingTask, {
           englishCyclePhase,
           englishSetIndex: Math.floor(dayIndex / 2),
-          englishExamType: state.englishCycle?.examType || "英语二",
+          englishExamType: state.englishCycle?.examType || "英语一",
           englishSection: existingTask.englishSection || "Text 1～4 / 完形 / 新题型 / 翻译"
         });
         // 旧版本内置英语任务没有周期字段时，补齐自动生成的标题和说明；
@@ -854,10 +928,14 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
       const subject = ensureSubject(state, block.subjectKey, definition);
       const module = politicsEntry
         ? ensurePoliticsModule(subject, politicsEntry, options)
-        : ensureModule(subject, phase);
+        : block.subjectKey === "english"
+          ? ensureEnglishCycleModule(subject)
+          : ensureModule(subject, phase);
       const chapter = politicsEntry
         ? ensurePoliticsChapter(module, politicsEntry, options)
-        : ensureChapter(module, block.subjectKey, phase.key, group);
+        : block.subjectKey === "english"
+          ? ensureEnglishCycleChapter(module, Math.floor(dayIndex / 2))
+          : ensureChapter(module, block.subjectKey, phase.key, group);
       const scheduledAt = localDateAt(day, block.startHour, block.startMinute);
       const dueAt = new Date(scheduledAt.getTime() + 120 * 60_000);
       const task = createTask({
@@ -897,7 +975,7 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
         politicsPlanVersion: politicsEntry ? POLITICS_PLAN_VERSION : null,
         englishCyclePhase,
         englishSetIndex: englishCyclePhase ? Math.floor(dayIndex / 2) : null,
-        englishExamType: englishCyclePhase ? (state.englishCycle?.examType || "英语二") : null,
+        englishExamType: englishCyclePhase ? (state.englishCycle?.examType || "英语一") : null,
         englishSection: englishCyclePhase ? "Text 1～4 / 完形 / 新题型 / 翻译" : null
       });
       chapter.tasks.push(task);
@@ -929,6 +1007,9 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
     subjectPomodoroTarget: 4,
     politicsPlanVersion: POLITICS_PLAN_VERSION,
     politicsOutlineCount: POLITICS_OUTLINE_ENTRIES.length,
+    englishCyclePlanVersion: ENGLISH_CYCLE_PLAN_VERSION,
+    englishExamType: state.englishCycle?.examType || "英语一",
+    englishCycle: "two-day-real-exam",
     phaseSchedule,
     sources: PLAN_SOURCES
   };
@@ -938,6 +1019,7 @@ export function installBuiltinStudyPlan(state, now = new Date(), options = {}) {
     taskCount: createdCount,
     migratedCount: migration.migratedCount,
     archivedPoliticsCount: migration.politicsLegacyCount,
+    archivedEnglishCount,
     planning: state.planning
   };
 }
