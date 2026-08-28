@@ -215,6 +215,18 @@ function splitLines(text) {
     .filter(Boolean);
 }
 
+// 在移动端把长任务拆成多个小批次，给浏览器机会处理触摸、绘制和内存回收。
+// 这不会限制导入数量，只是避免一次循环长时间占满主线程。
+function yieldToBrowser() {
+  return new Promise(resolve => {
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(resolve, { timeout: 16 });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
 function isSeparatorRow(cells) {
   return cells.length >= 2 && cells.every(cell => /^:?-{3,}:?$/.test(cell.replace(/\s/g, "")));
 }
@@ -263,6 +275,52 @@ export function parseVocabularyInput(text) {
   return { rows, errors: [], format };
 }
 
+/**
+ * 异步解析版本。普通小清单仍可使用同步版本；移动端导入较长 AI 输出时，
+ * 每批让出主线程，避免 Safari 因长时间无响应而回收页面。
+ */
+export async function parseVocabularyInputAsync(text, options = {}) {
+  const lines = splitLines(text);
+  if (!lines.length) return { rows: [], errors: ["输入内容为空"], format: "unknown" };
+  const looksMarkdown = lines.some(line => line.includes("|") && line.split("|").length >= 3);
+  const delimiter = looksMarkdown ? "|" : lines.some(line => line.includes("\t")) ? "\t" : ",";
+  const format = looksMarkdown ? "markdown" : delimiter === "\t" ? "tsv" : "csv";
+  const batchSize = Math.max(50, Number(options.batchSize) || 200);
+  const cellsList = [];
+  for (let start = 0; start < lines.length; start += batchSize) {
+    const end = Math.min(start + batchSize, lines.length);
+    for (let index = start; index < end; index += 1) {
+      const cells = parseDelimitedLine(lines[index], delimiter);
+      cellsList.push(looksMarkdown
+        ? cells.slice(cells[0] === "" ? 1 : 0, cells.at(-1) === "" ? -1 : undefined)
+        : cells);
+    }
+    options.onProgress?.({ phase: "parse", completed: end, total: lines.length });
+    if (end < lines.length) await yieldToBrowser();
+  }
+  if (isSeparatorRow(cellsList[1] ?? [])) cellsList.splice(1, 1);
+  const indexes = headerIndexes(cellsList[0] ?? []);
+  const hasHeader = (cellsList[0] ?? []).some(cell => /词条|词性|词义|原句|term|definition|sentence/i.test(cell));
+  const dataRows = hasHeader ? cellsList.slice(1) : cellsList;
+  const rows = [];
+  for (let start = 0; start < dataRows.length; start += batchSize) {
+    const end = Math.min(start + batchSize, dataRows.length);
+    for (let index = start; index < end; index += 1) {
+      const cells = dataRows[index];
+      if (cells.every(cell => !cell)) continue;
+      if (cells.length < 3) {
+        rows.push({ term: cells[0] ?? "", definition: cells[1] ?? "", sentence: cells[2] ?? "", parseError: "列数不足三列" });
+        continue;
+      }
+      rows.push({ term: cells[indexes.term] ?? "", definition: cells[indexes.definition] ?? "", sentence: cells[indexes.sentence] ?? "" });
+    }
+    options.onProgress?.({ phase: "rows", completed: end, total: dataRows.length });
+    if (end < dataRows.length) await yieldToBrowser();
+  }
+  if (!rows.length) return { rows: [], errors: ["未识别到有效的三列表格、TSV 或 CSV"], format };
+  return { rows, errors: [], format };
+}
+
 function sourceKey(source) {
   return [source.year, source.examType, source.section, source.originalSentence]
     .map(value => String(value ?? "").trim().toLocaleLowerCase()).join("|");
@@ -274,11 +332,7 @@ function findVocabularyItem(state, term) {
 }
 
 /** 生成预览结果，重复、缺失字段和解析问题全部显示给用户确认。 */
-export function buildVocabularyImportPreview(state, metadata, text) {
-  normalizeVocabularyState(state);
-  const parsed = parseVocabularyInput(text);
-  const seen = new Set();
-  const rows = parsed.rows.map((row, index) => {
+function buildVocabularyPreviewRow(state, metadata, row, index, seen) {
     const term = String(row.term ?? "").trim();
     const definition = String(row.definition ?? "").trim();
     const sentenceInfo = parseSentenceOrigin(row.sentence);
@@ -325,7 +379,12 @@ export function buildVocabularyImportPreview(state, metadata, text) {
         taskId: metadata.taskId || null
       }
     };
-  });
+}
+
+function buildVocabularyImportPreviewFromParsed(state, metadata, parsed) {
+  normalizeVocabularyState(state);
+  const seen = new Set();
+  const rows = parsed.rows.map((row, index) => buildVocabularyPreviewRow(state, metadata, row, index, seen));
   return {
     format: parsed.format,
     parserErrors: parsed.errors,
@@ -333,6 +392,36 @@ export function buildVocabularyImportPreview(state, metadata, text) {
       validCount: rows.filter(row => !row.errors.length || row.errors.every(error => error === "原句缺失")).length,
     invalidCount: rows.filter(row => row.errors.some(error => error !== "原句缺失")).length
   };
+}
+
+export function buildVocabularyImportPreview(state, metadata, text) {
+  return buildVocabularyImportPreviewFromParsed(state, metadata, parseVocabularyInput(text));
+}
+
+/** 移动端导入使用的分批预览构建，不改变同步 API 和数据格式。 */
+export async function buildVocabularyImportPreviewAsync(state, metadata, text, options = {}) {
+  const parsed = await parseVocabularyInputAsync(text, options);
+  normalizeVocabularyState(state);
+  const seen = new Set();
+  const rows = [];
+  const batchSize = Math.max(50, Number(options.batchSize) || 200);
+  for (let start = 0; start < parsed.rows.length; start += batchSize) {
+    const end = Math.min(start + batchSize, parsed.rows.length);
+    for (let index = start; index < end; index += 1) {
+      rows.push(buildVocabularyPreviewRow(state, metadata, parsed.rows[index], index, seen));
+    }
+    options.onProgress?.({ phase: "preview", completed: end, total: parsed.rows.length });
+    if (end < parsed.rows.length) await yieldToBrowser();
+  }
+  const preview = {
+    format: parsed.format,
+    parserErrors: parsed.errors,
+    rows,
+    validCount: rows.filter(row => !row.errors.length || row.errors.every(error => error === "原句缺失")).length,
+    invalidCount: rows.filter(row => row.errors.some(error => error !== "原句缺失")).length
+  };
+  options.onProgress?.({ phase: "complete", completed: preview.rows.length, total: preview.rows.length });
+  return preview;
 }
 
 function mergeDefinition(existing, incoming, choice) {

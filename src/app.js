@@ -30,7 +30,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.6.1";
+} from "./domain.js?v=1.6.2";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -42,19 +42,19 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.6.1";
+} from "./storage.js?v=1.6.2";
 import {
   BUILTIN_PLAN_VERSION,
   ENGLISH_CYCLE_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.6.1";
+} from "./study-plan.js?v=1.6.2";
 import {
   VOCABULARY_PROMPT,
   applyVocabularyImport,
   archiveVocabularyItem,
-  buildVocabularyImportPreview,
+  buildVocabularyImportPreviewAsync,
   highlightVocabularySentence,
   markVocabularyMastered,
   normalizeVocabularyState,
@@ -66,9 +66,9 @@ import {
   vocabularyCompletionPrompt,
   vocabularyQueueForDate,
   vocabularyRemainingCount
-} from "./vocabulary.js?v=1.6.1";
+} from "./vocabulary.js?v=1.6.2";
 
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.6.2";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -124,6 +124,7 @@ const runtime = {
   vocabularyFilters: { status: "all", year: "all", examType: "all", section: "all", due: "all" },
   vocabularyLibraryLimit: 100,
   vocabularyPreviewLimit: 100,
+  vocabularyParsing: false,
   currentDateKey: dateKey(),
   boardPhase: "foundation"
 };
@@ -1090,7 +1091,8 @@ function openVocabularyImport() {
   const englishTask = planTasksForDate(state, new Date()).find(({ subject }) => subject.planSubjectKey === "english");
   runtime.vocabularySourceTaskId = englishTask?.task.id ?? null;
   runtime.vocabularyPreview = null;
-  runtime.vocabularyPreviewLimit = 100;
+  // 手机 Safari 对大量表单控件更敏感，首屏只挂载较小窗口，仍可按需加载全部行。
+  runtime.vocabularyPreviewLimit = window.matchMedia?.("(pointer: coarse)")?.matches ? 40 : 100;
   openModal(vocabularyImportForm(), { title: "导入生词", kind: "vocabulary-import", wide: true });
 }
 
@@ -2009,6 +2011,7 @@ async function handleSubmit(event) {
   event.preventDefault();
   const form = event.target;
   if (form.id === "vocabulary-import-form") {
+    if (runtime.vocabularyParsing) return;
     const data = new FormData(form);
     const section = String(data.get("section") ?? "");
     const customSection = String(data.get("customSection") ?? "").trim();
@@ -2024,10 +2027,37 @@ async function handleSubmit(event) {
       showToast("请填写年份、来源位置并粘贴生词清单", "error");
       return;
     }
-    runtime.vocabularyPreview = buildVocabularyImportPreview(state, metadata, originalText);
-    runtime.vocabularyPreview.metadata = metadata;
-    runtime.vocabularyPreview.originalText = originalText;
-    openModal(renderVocabularyPreview(runtime.vocabularyPreview), { title: "确认导入预览", kind: "vocabulary-preview", wide: true });
+    const submitButton = form.querySelector("button[type=submit]");
+    const originalButtonHTML = submitButton?.innerHTML;
+    runtime.vocabularyParsing = true;
+    if (submitButton) {
+      submitButton.disabled = true;
+      submitButton.setAttribute("aria-busy", "true");
+      submitButton.textContent = "正在解析…";
+    }
+    try {
+      runtime.vocabularyPreview = await buildVocabularyImportPreviewAsync(state, metadata, originalText, {
+        onProgress: progress => {
+          if (submitButton && progress.phase === "parse") {
+            submitButton.textContent = `正在解析 ${progress.completed}/${progress.total}…`;
+          }
+        }
+      });
+      runtime.vocabularyPreview.metadata = metadata;
+      runtime.vocabularyPreview.originalText = originalText;
+      runtime.vocabularyPreviewLimit = runtime.vocabularyPreviewLimit || (window.matchMedia?.("(pointer: coarse)")?.matches ? 40 : 100);
+      openModal(renderVocabularyPreview(runtime.vocabularyPreview), { title: "确认导入预览", kind: "vocabulary-preview", wide: true });
+    } catch (error) {
+      runtime.vocabularyPreview = null;
+      showToast(`解析失败：${error?.message || "输入内容过大或格式异常，请分批粘贴"}`, "error");
+      if (submitButton) {
+        submitButton.disabled = false;
+        submitButton.removeAttribute("aria-busy");
+        if (originalButtonHTML) submitButton.innerHTML = originalButtonHTML;
+      }
+    } finally {
+      runtime.vocabularyParsing = false;
+    }
     return;
   }
   if (form.id === "vocabulary-preview-form") {
@@ -2473,7 +2503,11 @@ async function initialize() {
   startFocusTicker();
 
   appElement.addEventListener("click", handleClick);
-  appElement.addEventListener("submit", handleSubmit);
+  const safeHandleSubmit = event => handleSubmit(event).catch(error => {
+    console.error(error);
+    showToast(`操作失败：${error?.message || "请稍后重试"}`, "error");
+  });
+  appElement.addEventListener("submit", safeHandleSubmit);
   appElement.addEventListener("change", handleChange);
   appElement.addEventListener("dragstart", handleDragStart);
   appElement.addEventListener("dragover", handleDragOver);
@@ -2484,7 +2518,7 @@ async function initialize() {
   appElement.addEventListener("pointerup", handlePointerUp);
   appElement.addEventListener("pointercancel", handlePointerCancel);
   modalRoot.addEventListener("click", handleClick);
-  modalRoot.addEventListener("submit", handleSubmit);
+  modalRoot.addEventListener("submit", safeHandleSubmit);
   modalRoot.addEventListener("change", handleChange);
   document.addEventListener("toggle", handleDetailsToggle, true);
   document.addEventListener("keydown", event => {
