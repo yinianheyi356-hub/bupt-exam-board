@@ -20,25 +20,63 @@ export const VOCABULARY_PROMPT = `你是一名考研英语生词整理助手。�
    - 形容词、副词保留基本形式；
    - 固定搭配、习语和短语动词作为完整词条保留。
 4. 找到高亮词所在的完整英文原句，并从句首到句末准确抄录。
-5. 保留原句原有的拼写、大小写和标点，不翻译、不改写、不补写图片中未显示的内容。
-6. 自动合并因文章排版换行而断开的单词。
-7. 输出三列表格：
+5. 如果词条来自选择题选项、图片中没有包含它所在的上下文：
+   - 先检索可核验的往年考研英语真题原句；找到时必须同时写明真实年份、英语一/英语二和文章位置，并保持原句原有拼写、大小写和标点；
+   - 如果无法找到可核验的真题原句，再自行造一个符合考研语境的英文例句；此时必须在原句开头标记“【AI自拟例句】”，不得把自拟句伪装成真题原句，也不要编造年份或文章位置。
+6. 真题原句保留原有的拼写、大小写和标点，不翻译、不改写、不补写图片中未显示的内容；AI 自拟例句必须明确带有“【AI自拟例句】”标记。
+7. 自动合并因文章排版换行而断开的单词。
+8. 输出三列表格：
    - 第一列：单词原型或完整短语；
    - 第二列：词性与中文词义；
    - 第三列：黄色高亮词所在的完整真题原句。
-8. 词义要求：
+9. 词义要求：
    - 标明词性；
    - 将本句中的语境义放在最前并标记为‘语境义’；
    - 补充考研英语可能出现的常见义和生僻义；
    - 多个词性或词义使用分号分隔；
    - 词义准确、全面、简洁。
-9. 同一句中存在多个黄色高亮词时，每个词单独占一行，并分别保留完整原句。
-10. 同一个词出现在不同原句中时分别保留，不要删除，以便系统记录多个真题来源。
-11. 不要提取没有被黄色高亮的单词。
-12. 如果无法确定拼写、原型或完整原句，不要猜测，将内容放入待确认项。
-13. 最后追加一个TSV代码块，表头为：
+10. 同一句中存在多个黄色高亮词时，每个词单独占一行，并分别保留完整原句。
+11. 同一个词出现在不同原句中时分别保留，不要删除，以便系统记录多个真题来源。
+12. 不要提取没有被黄色高亮的单词。
+13. 如果无法确定拼写、原型、真题出处或例句内容，将内容放入待确认项，不要伪造出处。
+14. 最后追加一个TSV代码块，表头为：
 词条\t词性与词义\t真题原句
 三列之间使用一个制表符，不要添加序号。`;
+
+export const VOCABULARY_COMPLETION_PROMPT = `你是一名考研英语真题例句补全助手。下面是一些来自考研英语选择题选项的生词，它们在原图片中没有完整上下文。
+
+请对每个词条按以下顺序处理：
+1. 优先检索可核验的历年考研英语真题原句；只有能够确认年份、英语一/英语二、文章位置和原句的，才可以标记为“真题原句”。
+2. 找不到可核验真题原句时，写一个自然、准确、符合考研阅读语境的英文例句，并在句首添加“【AI自拟例句】”。不得编造年份、试卷类型、文章位置或虚假的真题出处。
+3. 保留词条原型，不要改变词义；输出时每个词条一行。
+4. 输出 TSV 代码块，严格使用以下四列表头（制表符分隔）：
+词条\t词性与词义\t真题原句\t来源类型
+5. 来源类型只能填写“真题原句”或“AI自拟例句”。如果仍无法确定，填写“待确认”，不要猜测。
+
+待补全词条：
+{{TERMS}}
+
+导入看板时，前三列仍可直接粘贴到生词导入框；第四列只用于核对来源。`;
+
+function parseSentenceOrigin(sentence) {
+  const value = String(sentence ?? "").trim();
+  if (!value) return { sentence: "", sentenceOrigin: "missing" };
+  const aiMarker = /^(?:【AI自拟例句】|\[AI自拟例句\]|AI自拟例句[:：]\s*)/i;
+  if (aiMarker.test(value)) {
+    return { sentence: value.replace(aiMarker, "").trim(), sentenceOrigin: "ai-generated" };
+  }
+  return { sentence: value, sentenceOrigin: "exam" };
+}
+
+export function vocabularyCompletionPrompt(rows = [], metadata = {}) {
+  const terms = rows
+    .filter(row => !row.sentence || row.errors?.includes("原句缺失"))
+    .map(row => `- ${row.term || "（待确认词条）"}${row.definition ? `：${row.definition}` : ""}`)
+    .join("\n");
+  return VOCABULARY_COMPLETION_PROMPT
+    .replace("{{TERMS}}", terms || "- （没有待补全词条）")
+    .replace("考研英语选择题选项", `${metadata.examType || "考研英语"}${metadata.year ? ` ${metadata.year}` : ""} 选择题选项`);
+}
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -102,6 +140,9 @@ export function normalizeVocabularyState(state) {
       examType: source.examType === "英语一" ? "英语一" : "英语二",
       section: String(source.section ?? "").trim(),
       originalSentence: String(source.originalSentence ?? "").trim(),
+      sentenceOrigin: ["exam", "ai-generated", "missing"].includes(source.sentenceOrigin)
+        ? source.sentenceOrigin
+        : (String(source.originalSentence ?? "").trim() ? "exam" : "missing"),
       surfaceForm: String(source.surfaceForm ?? "").trim(),
       highlightText: String(source.highlightText ?? "").trim(),
       note: String(source.note ?? ""),
@@ -240,7 +281,8 @@ export function buildVocabularyImportPreview(state, metadata, text) {
   const rows = parsed.rows.map((row, index) => {
     const term = String(row.term ?? "").trim();
     const definition = String(row.definition ?? "").trim();
-    const sentence = String(row.sentence ?? "").trim();
+    const sentenceInfo = parseSentenceOrigin(row.sentence);
+    const sentence = sentenceInfo.sentence;
     const normalizedTerm = normalizeVocabularyTerm(term);
     const errors = [];
     const warnings = [];
@@ -262,6 +304,7 @@ export function buildVocabularyImportPreview(state, metadata, text) {
       term,
       definition,
       sentence,
+      sentenceOrigin: sentenceInfo.sentenceOrigin,
       normalizedTerm,
       existingItemId: existing?.id ?? null,
       existingDefinition: existing?.definition ?? "",
@@ -275,6 +318,7 @@ export function buildVocabularyImportPreview(state, metadata, text) {
         examType: metadata.examType === "英语一" ? "英语一" : "英语二",
         section: String(metadata.section ?? "").trim(),
         originalSentence: sentence,
+        sentenceOrigin: sentenceInfo.sentenceOrigin,
         surfaceForm: String(metadata.surfaceForm ?? "").trim(),
         highlightText: String(metadata.highlightText ?? "").trim(),
         note: String(metadata.note ?? "").trim(),
@@ -352,6 +396,7 @@ export function applyVocabularyImport(state, preview, options = {}) {
     const source = {
       id: createId(), vocabularyItemId: item.id, ...clone(row.source),
       originalSentence: row.sentence.trim(), importedAt: now,
+      sentenceOrigin: row.sentenceOrigin || (row.sentence ? "exam" : "missing"),
       surfaceForm: row.source.surfaceForm || row.term.trim(),
       highlightText: row.source.highlightText || row.term.trim()
     };

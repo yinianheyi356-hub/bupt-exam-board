@@ -7,7 +7,7 @@ import {
   daysBetween,
   getTaskContexts,
   startOfDay
-} from "./domain.js?v=1.5.1";
+} from "./domain.js?v=1.6.0";
 
 export const BUILTIN_PLAN_VERSION = "bupt-mjc-2027-v2";
 // 政治目录单独维护版本。四科日程共用 BUILTIN_PLAN_VERSION，政治目录更新时只迁移政治任务。

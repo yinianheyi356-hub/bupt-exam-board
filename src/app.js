@@ -30,7 +30,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.5.1";
+} from "./domain.js?v=1.6.0";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -42,14 +42,14 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.5.1";
+} from "./storage.js?v=1.6.0";
 import {
   BUILTIN_PLAN_VERSION,
   ENGLISH_CYCLE_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.5.1";
+} from "./study-plan.js?v=1.6.0";
 import {
   VOCABULARY_PROMPT,
   applyVocabularyImport,
@@ -63,11 +63,12 @@ import {
   sourcesForVocabularyItem,
   undoVocabularyReview,
   unarchiveVocabularyItem,
+  vocabularyCompletionPrompt,
   vocabularyQueueForDate,
   vocabularyRemainingCount
-} from "./vocabulary.js?v=1.5.1";
+} from "./vocabulary.js?v=1.6.0";
 
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.6.0";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -1030,6 +1031,17 @@ function openVocabularyPrompt() {
     </div>`, { title: "生词图片整理提示词", kind: "vocabulary-prompt", wide: true });
 }
 
+function openVocabularyCompletionPrompt() {
+  const preview = runtime.vocabularyPreview;
+  const prompt = vocabularyCompletionPrompt(preview?.rows ?? [], preview?.metadata ?? {});
+  openModal(`
+    <div class="prompt-modal">
+      <p>把下面提示词交给支持联网检索的 AI。它会优先寻找可核验的历年真题原句，找不到时才生成并明确标记“AI自拟例句”。返回结果后，回到导入预览逐行核对再确认。</p>
+      <textarea id="vocabulary-completion-prompt-text" rows="20" readonly>${escapeHTML(prompt)}</textarea>
+      <div class="modal-actions"><button type="button" class="secondary-command" data-action="copy-vocabulary-completion-prompt">${icon("copy", 17)}<span>复制补全提示词</span></button><button type="button" class="primary-command" data-action="back-vocabulary-preview">返回预览</button></div>
+    </div>`, { title: "AI 补全生词例句", kind: "vocabulary-completion-prompt", wide: true });
+}
+
 function vocabularyImportForm() {
   return `
     <form id="vocabulary-import-form" class="modal-form" data-mode="input">
@@ -1048,6 +1060,7 @@ function vocabularyImportForm() {
 
 function renderVocabularyPreview(preview) {
   const rows = preview?.rows ?? [];
+  const hasMissingSentence = rows.some(row => row.errors?.includes("原句缺失") || !row.sentence);
   return `
     <form id="vocabulary-preview-form" class="modal-form" data-mode="preview">
       ${preview?.parserErrors?.length ? `<div class="import-error">${preview.parserErrors.map(escapeHTML).join("；")}</div>` : ""}
@@ -1058,7 +1071,7 @@ function renderVocabularyPreview(preview) {
             <div class="preview-row-number">${index + 1}</div>
             <label class="field"><span>词条</span><input name="term-${index}" value="${escapeHTML(row.term)}"></label>
             <label class="field"><span>词性与词义</span><input name="definition-${index}" value="${escapeHTML(row.definition)}"></label>
-            <label class="field"><span>真题原句</span><textarea name="sentence-${index}" rows="2">${escapeHTML(row.sentence)}</textarea></label>
+            <label class="field"><span>原句/例句 ${row.sentenceOrigin === "ai-generated" ? `<em class="sentence-origin ai">AI自拟例句（非真题原句）</em>` : row.sentenceOrigin === "missing" || !row.sentence ? `<em class="sentence-origin missing">待补全</em>` : ""}</span><textarea name="sentence-${index}" rows="2" placeholder="优先填可核验真题原句；找不到时请以【AI自拟例句】开头">${escapeHTML(row.sentence)}</textarea></label>
             ${row.existingItemId ? `<label class="field"><span>释义冲突</span><select name="definitionChoice-${index}"><option value="merge">合并释义</option><option value="keep">保留原释义</option><option value="new">使用新释义</option></select></label>` : ""}
             ${row.masteredChoice ? `<label class="field"><span>已记牢词</span><select name="masteredChoice-${index}"><option value="keep">追加来源并保持已记牢</option><option value="restore">恢复到复习队列</option></select></label>` : ""}
             ${row.errors?.length || row.warnings?.length ? `<p class="row-errors">${[...(row.errors ?? []), ...(row.warnings ?? [])].map(escapeHTML).join("；")}</p>` : ""}
@@ -1066,7 +1079,7 @@ function renderVocabularyPreview(preview) {
           </article>`).join("")}
       </div>
       <label class="toggle-field"><span>允许原句缺失（稍后手动补充）</span><input name="acceptMissingSentence" type="checkbox"><span class="toggle-ui"></span></label>
-      <div class="modal-actions"><button type="button" class="secondary-command" data-action="back-vocabulary-import">返回修改</button><button type="submit" class="primary-command">${icon("database-zap", 17)}<span>确认导入</span></button></div>
+      <div class="modal-actions">${hasMissingSentence ? `<button type="button" class="secondary-command" data-action="open-vocabulary-completion-prompt">${icon("sparkles", 17)}<span>让 AI 补全例句</span></button>` : ""}<button type="button" class="secondary-command" data-action="back-vocabulary-import">返回修改</button><button type="submit" class="primary-command">${icon("database-zap", 17)}<span>确认导入</span></button></div>
     </form>`;
 }
 
@@ -1097,7 +1110,7 @@ function openVocabularyReview(sourceTaskId = null) {
   const reviews = state.vocabulary.reviewRecords.filter(record => record.vocabularyItemId === item.id && !record.undoneAt).length;
   openModal(`
     <div class="vocabulary-card" data-vocabulary-item-id="${item.id}">
-      <div class="vocabulary-card-meta"><span>${escapeHTML(source?.year ?? "未设置年份")} · ${escapeHTML(source?.examType ?? "英语一")} · ${escapeHTML(source?.section ?? "未设置位置")}</span><span data-vocabulary-remaining>剩余 ${queue.length} 个词条</span></div>
+      <div class="vocabulary-card-meta"><span>${escapeHTML(source?.year ?? "未设置年份")} · ${escapeHTML(source?.examType ?? "英语一")} · ${escapeHTML(source?.section ?? "未设置位置")}${source?.sentenceOrigin === "ai-generated" ? " · AI自拟例句（非真题原句）" : source?.sentenceOrigin === "missing" ? " · 原句待补全" : ""}</span><span data-vocabulary-remaining>剩余 ${queue.length} 个词条</span></div>
       <h3>${escapeHTML(item.term)}</h3>
       <p class="vocabulary-sentence ${highlight.matched ? "" : "needs-manual-highlight"}">${highlight.html}</p>
       ${!highlight.matched ? `<label class="field"><span>手动指定高亮内容（可选）</span><input name="manualHighlightText" data-manual-highlight value="${escapeHTML(source?.highlightText ?? "")}" placeholder="填写原句中实际形式"></label>` : ""}
@@ -1111,7 +1124,7 @@ function openVocabularyReview(sourceTaskId = null) {
         <button type="button" class="secondary-command" data-action="master-vocabulary" data-vocabulary-id="${item.id}">我已记牢</button>
         <button type="button" class="primary-command" data-action="next-vocabulary">下一个</button>
       </div>
-      ${state.vocabulary.sources.filter(sourceItem => sourceItem.vocabularyItemId === item.id).length > 1 ? `<details class="source-switcher"><summary>查看其他原句与来源</summary>${sourcesForVocabularyItem(state, item.id, sourceTaskId).map(sourceItem => `<p>${escapeHTML(sourceItem.year)} · ${escapeHTML(sourceItem.examType)} · ${escapeHTML(sourceItem.section)}<br>${escapeHTML(sourceItem.originalSentence)}</p>`).join("")}</details>` : ""}
+      ${state.vocabulary.sources.filter(sourceItem => sourceItem.vocabularyItemId === item.id).length > 1 ? `<details class="source-switcher"><summary>查看其他原句与来源</summary>${sourcesForVocabularyItem(state, item.id, sourceTaskId).map(sourceItem => `<p>${escapeHTML(sourceItem.year)} · ${escapeHTML(sourceItem.examType)} · ${escapeHTML(sourceItem.section)}${sourceItem.sentenceOrigin === "ai-generated" ? " · AI自拟例句" : ""}<br>${escapeHTML(sourceItem.originalSentence || "原句待补全")}</p>`).join("")}</details>` : ""}
     </div>`, { title: "单词复习", kind: "vocabulary-review", wide: true });
 }
 
@@ -1213,7 +1226,7 @@ function openVocabularyDetail(itemId) {
       ${textField("term", "词条", item.term, true)}
       <label class="field"><span>词性与词义</span><textarea name="definition" rows="4" required>${escapeHTML(item.definition)}</textarea></label>
       <label class="field"><span>备注</span><textarea name="note" rows="3">${escapeHTML(item.note)}</textarea></label>
-      <section class="material-section"><div class="material-section-heading"><strong>全部真题来源与原句</strong></div>${sources.length ? sources.map((source, index) => `<label class="field source-detail"><span>${escapeHTML(source.year)} · ${escapeHTML(source.examType)} · ${escapeHTML(source.section)}</span><textarea name="sourceSentence-${index}" rows="2">${escapeHTML(source.originalSentence)}</textarea><input type="hidden" name="sourceId-${index}" value="${source.id}"></label>`).join("") : `<p class="form-hint">暂无来源</p>`}</section>
+      <section class="material-section"><div class="material-section-heading"><strong>全部真题来源与原句</strong></div>${sources.length ? sources.map((source, index) => `<label class="field source-detail"><span>${escapeHTML(source.year)} · ${escapeHTML(source.examType)} · ${escapeHTML(source.section)}${source.sentenceOrigin === "ai-generated" ? " · AI自拟例句（非真题原句）" : source.sentenceOrigin === "missing" ? " · 原句待补全" : ""}</span><textarea name="sourceSentence-${index}" rows="2" placeholder="原句待补全">${escapeHTML(source.originalSentence)}</textarea><input type="hidden" name="sourceId-${index}" value="${source.id}"></label>`).join("") : `<p class="form-hint">暂无来源</p>`}</section>
       <section class="material-section"><div class="material-section-heading"><strong>复习历史（${history.length} 次）</strong></div>${history.length ? history.slice(0, 30).map(record => `<p class="source-detail">${formatDate(record.reviewedAt, { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${escapeHTML(record.result)}</p>`).join("") : `<p class="form-hint">暂无复习记录</p>`}</section>
       <div class="modal-actions"><button type="button" class="secondary-command" data-action="close-modal">取消</button><button type="submit" class="primary-command">${icon("save", 17)}<span>保存修改</span></button></div>
     </form>`, { title: "词条详情", kind: "vocabulary-detail", wide: true });
@@ -1809,6 +1822,12 @@ async function handleClick(event) {
     navigator.clipboard?.writeText(VOCABULARY_PROMPT).then(() => showToast("提示词已复制"), () => showToast("复制失败，请长按文本复制", "error"));
     return;
   }
+  if (action === "open-vocabulary-completion-prompt") return openVocabularyCompletionPrompt();
+  if (action === "copy-vocabulary-completion-prompt") {
+    const prompt = vocabularyCompletionPrompt(runtime.vocabularyPreview?.rows ?? [], runtime.vocabularyPreview?.metadata ?? {});
+    navigator.clipboard?.writeText(prompt).then(() => showToast("AI 补全提示词已复制"), () => showToast("复制失败，请长按文本复制", "error"));
+    return;
+  }
   if (action === "open-vocabulary-import") return openVocabularyImport();
   if (action === "open-vocabulary-review") return openVocabularyReview();
   if (action === "open-task-vocabulary-review") return openVocabularyReview(button.dataset.taskId);
@@ -1818,6 +1837,10 @@ async function handleClick(event) {
     return openVocabularyLibrary();
   }
   if (action === "back-vocabulary-import") return openVocabularyImport();
+  if (action === "back-vocabulary-preview") {
+    if (runtime.vocabularyPreview) openModal(renderVocabularyPreview(runtime.vocabularyPreview), { title: "确认导入预览", kind: "vocabulary-preview", wide: true });
+    return;
+  }
   if (action === "remove-preview-row") {
     if (runtime.vocabularyPreview?.rows) {
       runtime.vocabularyPreview.rows.splice(Number(button.dataset.previewIndex), 1);
@@ -2000,14 +2023,20 @@ async function handleSubmit(event) {
     const data = new FormData(form);
     const preview = runtime.vocabularyPreview;
     if (!preview) return;
-    const editedRows = preview.rows.map((row, index) => ({
-      ...row,
-      term: String(data.get(`term-${index}`) ?? "").trim(),
-      definition: String(data.get(`definition-${index}`) ?? "").trim(),
-      sentence: String(data.get(`sentence-${index}`) ?? "").trim(),
-      definitionChoice: String(data.get(`definitionChoice-${index}`) ?? row.definitionChoice ?? "merge"),
-      masteredChoice: String(data.get(`masteredChoice-${index}`) ?? row.masteredChoice ?? "keep")
-    }));
+    const editedRows = preview.rows.map((row, index) => {
+      const rawSentence = String(data.get(`sentence-${index}`) ?? "").trim();
+      const aiMarker = /^(?:【AI自拟例句】|\[AI自拟例句\]|AI自拟例句[:：]\s*)/i;
+      const sentenceIsAI = aiMarker.test(rawSentence) || (row.sentenceOrigin === "ai-generated" && rawSentence.length > 0);
+      return {
+        ...row,
+        term: String(data.get(`term-${index}`) ?? "").trim(),
+        definition: String(data.get(`definition-${index}`) ?? "").trim(),
+        sentence: rawSentence.replace(aiMarker, "").trim(),
+        sentenceOrigin: sentenceIsAI ? "ai-generated" : rawSentence ? "exam" : "missing",
+        definitionChoice: String(data.get(`definitionChoice-${index}`) ?? row.definitionChoice ?? "merge"),
+        masteredChoice: String(data.get(`masteredChoice-${index}`) ?? row.masteredChoice ?? "keep")
+      };
+    });
     const editedTerms = new Set();
     preview.rows = editedRows.map(row => {
       const errors = [];
@@ -2074,8 +2103,10 @@ async function handleSubmit(event) {
     item.definition = definition;
     item.note = String(data.get("note") ?? "").trim();
     sourcesForVocabularyItem(state, item.id).forEach((source, index) => {
-      const sentence = String(data.get(`sourceSentence-${index}`) ?? "").trim();
-      if (sentence) source.originalSentence = sentence;
+      const rawSentence = String(data.get(`sourceSentence-${index}`) ?? "").trim();
+      const aiMarker = /^(?:【AI自拟例句】|\[AI自拟例句\]|AI自拟例句[:：]\s*)/i;
+      source.sentenceOrigin = aiMarker.test(rawSentence) ? "ai-generated" : rawSentence ? "exam" : "missing";
+      source.originalSentence = rawSentence.replace(aiMarker, "").trim();
     });
     item.updatedAt = new Date().toISOString();
     await saveNow();
