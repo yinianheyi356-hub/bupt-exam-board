@@ -30,7 +30,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.5.0";
+} from "./domain.js?v=1.5.1";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -42,14 +42,14 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.5.0";
+} from "./storage.js?v=1.5.1";
 import {
   BUILTIN_PLAN_VERSION,
   ENGLISH_CYCLE_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.5.0";
+} from "./study-plan.js?v=1.5.1";
 import {
   VOCABULARY_PROMPT,
   applyVocabularyImport,
@@ -65,9 +65,9 @@ import {
   unarchiveVocabularyItem,
   vocabularyQueueForDate,
   vocabularyRemainingCount
-} from "./vocabulary.js?v=1.5.0";
+} from "./vocabulary.js?v=1.5.1";
 
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.5.1";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -503,8 +503,9 @@ function renderModule(subject, module) {
   const progress = hierarchyProgress(module);
   const isPlanModule = Boolean(module.planKey);
   const isPoliticsOutlineModule = module.planKey?.startsWith("bupt-politics-");
+  const isEnglishCycleModule = module.planKey?.startsWith(`${ENGLISH_CYCLE_PLAN_VERSION}:`);
   const hasModuleState = Object.prototype.hasOwnProperty.call(state.ui.moduleExpanded ?? {}, module.id);
-  const defaultExpanded = isPoliticsOutlineModule ? true : !isPlanModule;
+  const defaultExpanded = isPoliticsOutlineModule || isEnglishCycleModule ? true : !isPlanModule;
   const expanded = hasModuleState ? state.ui.moduleExpanded[module.id] === true : defaultExpanded;
   return `
     <details class="hierarchy module-level" data-module-id="${escapeHTML(module.id)}" ${expanded ? "open" : ""}>
@@ -2409,6 +2410,9 @@ async function registerServiceWorker() {
 
 async function initialize() {
   state = normalizeState(await loadPersistedState());
+  // 1.4.0 的英语内置规划默认是英语二；本项目现按英语一运行。
+  // 仅对尚未带新周期版本标记的旧规划执行一次迁移，之后保留用户在设置中选择的类型。
+  if (!state.planning?.englishCyclePlanVersion) state.englishCycle.examType = "英语一";
   normalizeVocabularyState(state);
   const planResult = installBuiltinStudyPlan(state);
   runtime.tab = state.ui.selectedTab ?? "today";
