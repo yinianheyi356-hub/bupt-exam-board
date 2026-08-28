@@ -30,7 +30,7 @@ import {
   statisticsForRange,
   suggestedBreakType,
   todaySections
-} from "./domain.js?v=1.6.0";
+} from "./domain.js?v=1.6.1";
 import {
   clearPersistedState,
   deleteTaskAttachment,
@@ -42,14 +42,14 @@ import {
   saveTaskAttachment,
   saveEmergencySnapshot,
   savePersistedState
-} from "./storage.js?v=1.6.0";
+} from "./storage.js?v=1.6.1";
 import {
   BUILTIN_PLAN_VERSION,
   ENGLISH_CYCLE_PLAN_VERSION,
   PLAN_PHASES,
   installBuiltinStudyPlan,
   planTasksForDate
-} from "./study-plan.js?v=1.6.0";
+} from "./study-plan.js?v=1.6.1";
 import {
   VOCABULARY_PROMPT,
   applyVocabularyImport,
@@ -66,9 +66,9 @@ import {
   vocabularyCompletionPrompt,
   vocabularyQueueForDate,
   vocabularyRemainingCount
-} from "./vocabulary.js?v=1.6.0";
+} from "./vocabulary.js?v=1.6.1";
 
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.1";
 
 const appElement = document.querySelector("#app");
 const modalRoot = document.querySelector("#modal-root");
@@ -123,6 +123,7 @@ const runtime = {
   vocabularyLibraryQuery: "",
   vocabularyFilters: { status: "all", year: "all", examType: "all", section: "all", due: "all" },
   vocabularyLibraryLimit: 100,
+  vocabularyPreviewLimit: 100,
   currentDateKey: dateKey(),
   boardPhase: "foundation"
 };
@@ -1060,13 +1061,15 @@ function vocabularyImportForm() {
 
 function renderVocabularyPreview(preview) {
   const rows = preview?.rows ?? [];
+  const previewLimit = Math.max(1, Number(runtime.vocabularyPreviewLimit) || 100);
+  const visibleRows = rows.slice(0, previewLimit).map((row, index) => ({ row, index }));
   const hasMissingSentence = rows.some(row => row.errors?.includes("原句缺失") || !row.sentence);
   return `
     <form id="vocabulary-preview-form" class="modal-form" data-mode="preview">
       ${preview?.parserErrors?.length ? `<div class="import-error">${preview.parserErrors.map(escapeHTML).join("；")}</div>` : ""}
       <div class="import-summary"><strong>已识别 ${rows.length} 行</strong><span>格式：${escapeHTML(preview.format)}</span><span>红色提示需处理后才能导入</span></div>
       <div class="vocabulary-preview-list">
-        ${rows.map((row, index) => `
+        ${visibleRows.map(({ row, index }) => `
           <article class="vocabulary-preview-row ${row.errors?.length || row.warnings?.length ? "has-warning" : ""}">
             <div class="preview-row-number">${index + 1}</div>
             <label class="field"><span>词条</span><input name="term-${index}" value="${escapeHTML(row.term)}"></label>
@@ -1079,7 +1082,7 @@ function renderVocabularyPreview(preview) {
           </article>`).join("")}
       </div>
       <label class="toggle-field"><span>允许原句缺失（稍后手动补充）</span><input name="acceptMissingSentence" type="checkbox"><span class="toggle-ui"></span></label>
-      <div class="modal-actions">${hasMissingSentence ? `<button type="button" class="secondary-command" data-action="open-vocabulary-completion-prompt">${icon("sparkles", 17)}<span>让 AI 补全例句</span></button>` : ""}<button type="button" class="secondary-command" data-action="back-vocabulary-import">返回修改</button><button type="submit" class="primary-command">${icon("database-zap", 17)}<span>确认导入</span></button></div>
+      <div class="modal-actions">${rows.length > visibleRows.length ? `<button type="button" class="secondary-command" data-action="load-more-vocabulary-preview">加载更多（当前 ${visibleRows.length}/${rows.length}）</button>` : ""}${hasMissingSentence ? `<button type="button" class="secondary-command" data-action="open-vocabulary-completion-prompt">${icon("sparkles", 17)}<span>让 AI 补全例句</span></button>` : ""}<button type="button" class="secondary-command" data-action="back-vocabulary-import">返回修改</button><button type="submit" class="primary-command">${icon("database-zap", 17)}<span>确认导入全部 ${rows.length} 条</span></button></div>
     </form>`;
 }
 
@@ -1087,6 +1090,7 @@ function openVocabularyImport() {
   const englishTask = planTasksForDate(state, new Date()).find(({ subject }) => subject.planSubjectKey === "english");
   runtime.vocabularySourceTaskId = englishTask?.task.id ?? null;
   runtime.vocabularyPreview = null;
+  runtime.vocabularyPreviewLimit = 100;
   openModal(vocabularyImportForm(), { title: "导入生词", kind: "vocabulary-import", wide: true });
 }
 
@@ -1848,6 +1852,13 @@ async function handleClick(event) {
     }
     return;
   }
+  if (action === "load-more-vocabulary-preview") {
+    runtime.vocabularyPreviewLimit += 100;
+    if (runtime.vocabularyPreview) {
+      openModal(renderVocabularyPreview(runtime.vocabularyPreview), { title: "确认导入预览", kind: "vocabulary-preview", wide: true });
+    }
+    return;
+  }
   if (action === "review-vocabulary") {
     const itemId = button.dataset.vocabularyId;
     const manualText = modalRoot.querySelector("[data-manual-highlight]")?.value?.trim();
@@ -2024,13 +2035,20 @@ async function handleSubmit(event) {
     const preview = runtime.vocabularyPreview;
     if (!preview) return;
     const editedRows = preview.rows.map((row, index) => {
-      const rawSentence = String(data.get(`sentence-${index}`) ?? "").trim();
+      const termField = `term-${index}`;
+      const definitionField = `definition-${index}`;
+      const sentenceField = `sentence-${index}`;
+      // Only the visible preview page has form controls. Hidden rows retain
+      // their parsed values so "确认导入全部" remains lossless for large batches.
+      const rawTerm = data.has(termField) ? String(data.get(termField) ?? "").trim() : row.term;
+      const rawDefinition = data.has(definitionField) ? String(data.get(definitionField) ?? "").trim() : row.definition;
+      const rawSentence = data.has(sentenceField) ? String(data.get(sentenceField) ?? "").trim() : row.sentence;
       const aiMarker = /^(?:【AI自拟例句】|\[AI自拟例句\]|AI自拟例句[:：]\s*)/i;
       const sentenceIsAI = aiMarker.test(rawSentence) || (row.sentenceOrigin === "ai-generated" && rawSentence.length > 0);
       return {
         ...row,
-        term: String(data.get(`term-${index}`) ?? "").trim(),
-        definition: String(data.get(`definition-${index}`) ?? "").trim(),
+        term: rawTerm,
+        definition: rawDefinition,
         sentence: rawSentence.replace(aiMarker, "").trim(),
         sentenceOrigin: sentenceIsAI ? "ai-generated" : rawSentence ? "exam" : "missing",
         definitionChoice: String(data.get(`definitionChoice-${index}`) ?? row.definitionChoice ?? "merge"),

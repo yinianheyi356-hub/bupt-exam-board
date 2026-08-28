@@ -401,6 +401,9 @@ svg {
 .vocabulary-preview-row.has-warning { border-color: color-mix(in srgb, var(--red) 55%, var(--line)); }
 .vocabulary-preview-row .field { gap: 4px; }
 .vocabulary-preview-row .field span { font-size: 11px; }
+.sentence-origin { margin-left: 6px; font-style: normal; font-size: 10px; font-weight: 600; }
+.sentence-origin.ai { color: var(--amber); }
+.sentence-origin.missing { color: var(--red); }
 .preview-row-number { padding-top: 28px; color: var(--text-secondary); font-size: 12px; text-align: center; }
 .vocabulary-preview-row > .icon-button { position: absolute; top: 7px; right: 7px; width: 28px; height: 28px; }
 .row-errors { grid-column: 2 / -1; margin: -2px 0 0; }
